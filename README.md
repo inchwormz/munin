@@ -101,6 +101,7 @@ Restart Claude Code, then use slash commands:
 /munin-doctor
 /munin
 /munin-nudge
+/munin-proactive
 /munin-recall topic <query>
 /munin-strategy
 ```
@@ -123,6 +124,7 @@ $munin-memory-os-ingest
 $munin-doctor
 $munin
 $munin-nudge
+$munin-proactive
 $munin-recall
 $munin-strategy
 ```
@@ -286,6 +288,7 @@ Installed quick surfaces:
 /munin-install-claude
 /munin-install-codex
 /munin-memory-os-ingest
+/munin-proactive
 ```
 
 Codex equivalents use `$...`.

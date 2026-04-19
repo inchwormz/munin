@@ -3262,19 +3262,43 @@ fn render_friction_fixes(fixes: &[MemoryOsFrictionFix]) {
         println!("- none");
         return;
     }
-    let mut active = 0usize;
-    for fix in fixes.iter().filter(|fix| fix.status != "fixed").take(10) {
-        active += 1;
+    let non_fixed: Vec<&MemoryOsFrictionFix> =
+        fixes.iter().filter(|fix| fix.status != "fixed").collect();
+    let detailed_limit = 10usize;
+    for (index, fix) in non_fixed.iter().take(detailed_limit).enumerate() {
         println!(
-            "- [{}|{}] {}",
+            "{}. [{}|{}] {}",
+            index + 1,
             fix.impact,
             fix.status,
             display_text(&fix.title, 110)
         );
-        println!("  pattern: {}", display_text(&fix.summary, 180));
-        println!("  permanent fix: {}", display_text(&fix.permanent_fix, 220));
+        println!("   pattern: {}", display_text(&fix.summary, 180));
+        println!(
+            "   permanent fix: {}",
+            display_text(&fix.permanent_fix, 220)
+        );
         for evidence in fix.evidence.iter().take(2) {
-            println!("  evidence: {}", display_text(evidence, 160));
+            println!("   evidence: {}", display_text(evidence, 160));
+        }
+    }
+    let remaining = non_fixed.len().saturating_sub(detailed_limit);
+    if remaining > 0 {
+        println!();
+        println!(
+            "Additional Active Friction ({} more, awareness only)",
+            remaining
+        );
+        println!("------------------------------------------------------");
+        for (offset, fix) in non_fixed.iter().skip(detailed_limit).enumerate() {
+            println!(
+                "{}. [{}|{}] {} (score {})",
+                detailed_limit + offset + 1,
+                fix.impact,
+                fix.status,
+                display_text(&fix.title, 110),
+                fix.score
+            );
         }
     }
     let fixed_count = fixes.iter().filter(|fix| fix.status == "fixed").count();
@@ -3284,7 +3308,7 @@ fn render_friction_fixes(fixes: &[MemoryOsFrictionFix]) {
             fixed_count
         );
     }
-    if active == 0 && fixed_count == 0 {
+    if non_fixed.is_empty() && fixed_count == 0 {
         println!("- none");
     }
 }
