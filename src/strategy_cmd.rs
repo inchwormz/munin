@@ -95,6 +95,18 @@ fn render_recommend_text(report: &strategy::StrategyRecommendReport) -> String {
     if report.nudges.is_empty() {
         lines.push("No strategic nudge is ready from the current evidence.".to_string());
     } else if metrics_snapshot_lacks_current_values(report) {
+        lines.push("Suggested task queue:".to_string());
+        lines.push("Metric setup:".to_string());
+        lines.push(format!("1. Fill {} KPI metrics.", report.scope_id));
+        for (index, task) in report.continuity_tasks.iter().take(2).enumerate() {
+            lines.push(format!("{}. {}", index + 2, task.task));
+        }
+        lines.push("Execution:".to_string());
+        lines.push(
+            "- Start with the missing KPI values, then rerun `munin nudge` for execution work."
+                .to_string(),
+        );
+        lines.push("- Completion bar: current metric values are recorded or the concrete missing-data blocker is known.".to_string());
         lines.push(format!("1. Fill {} KPI metrics.", report.scope_id));
         lines.push(
             "   why now: Strategy has KPI targets, but current metric values are missing."
@@ -106,11 +118,38 @@ fn render_recommend_text(report: &strategy::StrategyRecommendReport) -> String {
         ));
         lines.push("   confidence: medium".to_string());
     } else {
+        if !report.nudge_tasks.is_empty() {
+            lines.push("Suggested task queue:".to_string());
+            for (index, task) in report.nudge_tasks.iter().take(3).enumerate() {
+                lines.push(format!("{}. {}", index + 1, task));
+            }
+            if let Some(first_task) = report.nudge_tasks.first() {
+                lines.push("Execution:".to_string());
+                lines.push(format!("- Start with this intervention: {first_task}."));
+                lines.push(
+                    "- Work it until implemented, verified, or blocked by a concrete recorded blocker."
+                        .to_string(),
+                );
+            }
+        }
+        lines.push("Task details:".to_string());
         for (index, nudge) in report.nudges.iter().take(3).enumerate() {
             lines.push(format!("{}. {}", index + 1, nudge.task));
             lines.push(format!("   why now: {}", nudge.why_now));
+            lines.push(format!("   expected effect: {}", nudge.expected_effect));
             lines.push(format!("   confidence: {}", nudge.confidence));
             for evidence in nudge.evidence.iter().take(2) {
+                lines.push(format!("   evidence: {}", evidence));
+            }
+        }
+    }
+    if !report.continuity_tasks.is_empty() {
+        lines.push("Continuity task details:".to_string());
+        for (index, task) in report.continuity_tasks.iter().take(3).enumerate() {
+            lines.push(format!("{}. {}", index + 1, task.task));
+            lines.push(format!("   source: {}", task.source));
+            lines.push(format!("   why now: {}", task.why_now));
+            for evidence in task.evidence.iter().take(2) {
                 lines.push(format!("   evidence: {}", evidence));
             }
         }
@@ -156,5 +195,50 @@ mod tests {
             .expect("prompt render");
         assert!(rendered.contains("<strategy_report"));
         assert!(rendered.contains("sitesorted-business"));
+    }
+
+    #[test]
+    fn nudge_text_includes_suggested_task_queue() {
+        let report = strategy::StrategyRecommendReport {
+            generated_at: "2026-04-19T00:00:00Z".to_string(),
+            scope_id: "sitesorted-business".to_string(),
+            continuity: strategy::StrategyContinuitySnapshot {
+                active: false,
+                summary: None,
+            },
+            nudge_tasks: vec![
+                "Fix friction: Keep autonomous work moving without manual polling".to_string(),
+            ],
+            continuity_tasks: vec![strategy::NudgeTask {
+                task: "Resume incomplete work: Finish recording-ready Munin onboarding".to_string(),
+                source: "verified-incomplete-task".to_string(),
+                why_now: "Memory OS recorded this as an open obligation.".to_string(),
+                evidence: vec!["continue checkpoint at 2026-04-19T00:00:00Z".to_string()],
+            }],
+            nudges: vec![strategy::StrategicNudge {
+                task: "Fix friction: Keep autonomous work moving without manual polling"
+                    .to_string(),
+                item_id: Some("friction:autonomy-polling".to_string()),
+                item_kind: "friction-fix".to_string(),
+                supports: Vec::new(),
+                why_now: "Repeated corrections show this is still active.".to_string(),
+                evidence: vec!["154 autonomy/polling corrections".to_string()],
+                evidence_freshness: "fresh".to_string(),
+                confidence: "high".to_string(),
+                interrupt_level: "interrupt".to_string(),
+                suppression_reason: None,
+                expected_effect: "Permanently reduce repeated polling friction.".to_string(),
+            }],
+            suppressed_nudges: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let rendered = render_recommend_text(&report);
+        assert!(rendered.contains("Suggested task queue:"));
+        assert!(rendered.contains("Start with this intervention"));
+        assert!(rendered.contains("Task details:"));
+        assert!(rendered.contains("Continuity task details:"));
+        assert!(rendered.contains("source: verified-incomplete-task"));
+        assert!(rendered.contains("expected effect: Permanently reduce repeated polling friction."));
     }
 }

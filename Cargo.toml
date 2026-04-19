@@ -1,6 +1,6 @@
 [package]
 name = "munin-memory"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 autobins = false
 authors = ["John McKeown"]
@@ -24,9 +24,10 @@ include = [
     "/src/analytics/mod.rs",
     "/src/analytics/claims_cmd.rs",
     "/src/analytics/memory_os_cmd.rs",
-    "/src/analytics/session_backfill.rs",
-    "/src/analytics/session_impact_cmd.rs",
-    "/src/core/access_layer/**",
+"/src/analytics/session_backfill.rs",
+"/src/analytics/session_impact_cmd.rs",
+"/src/assets/**",
+"/src/core/access_layer/**",
     "/src/core/artifacts.rs",
     "/src/core/config.rs",
     "/src/core/constants.rs",

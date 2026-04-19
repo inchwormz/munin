@@ -232,7 +232,7 @@ fn compact_display_text(text: &str, max_len: usize) -> String {
     }
 }
 
-use super::constants::{CONTEXT_DATA_DIR, DEFAULT_HISTORY_DAYS, HISTORY_DB};
+use super::constants::{DEFAULT_HISTORY_DAYS, HISTORY_DB};
 
 const MAINTENANCE_KEY_CLEANUP_OLD: &str = "cleanup_old";
 const CLEANUP_INTERVAL_SECS: i64 = 12 * 60 * 60;
@@ -1704,8 +1704,7 @@ fn get_db_path() -> Result<PathBuf> {
     }
 
     // Priority 3: Default platform-specific location
-    let data_dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    Ok(data_dir.join(CONTEXT_DATA_DIR).join(HISTORY_DB))
+    Ok(crate::core::config::context_data_dir()?.join(HISTORY_DB))
 }
 
 /// Estimate token count from text using ~4 chars = 1 token heuristic.

@@ -466,6 +466,9 @@ pub fn context_config_dir() -> Result<PathBuf> {
 }
 
 pub fn context_data_dir() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("MUNIN_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
     if let Ok(path) = std::env::var("CONTEXT_DATA_DIR_PATH") {
         return Ok(PathBuf::from(path));
     }

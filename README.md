@@ -1,146 +1,354 @@
 # Munin
 
-Local memory system for agent-driven development.
+Local memory for Claude Code and Codex.
+
+Munin reads your existing agent sessions, compiles them into a local Memory OS,
+and exposes that memory back to your agent through CLI commands, Claude slash
+commands, and Codex skills. It is designed for developers who want agents to
+remember active work, repeated mistakes, strategic priorities, and unfinished
+tasks without sending that memory to a hosted service.
 
 Current testing build: `v0.5.1`.
 
-## What It Is
-
-`munin` reads local Claude/Codex sessions, compiles startup memory, surfaces repeated friction, and keeps noisy shell output out of agent context.
-
-## How It Works
-
-Munin has three layers:
-
-1. **Session ingestion** reads local Claude, Codex, and archived session data: prompts, assistant turns, shell commands, outcomes, corrections, working directories, and timestamps.
-2. **Memory compilation** converts those raw sessions into a local Memory OS: evidence-backed facts, current project goals, open loops, repeated mistakes, command outcomes, strategy pressure, and proof rows.
-3. **Proactivity** can evaluate strategy and continuity on a schedule, write a morning brief, queue an intervention, and optionally launch an agent session.
-4. **Agent access** exposes the compiled memory through CLI surfaces and installed Codex/Claude skills, so agents query structured memory instead of searching raw transcripts.
-
-No hosted service is required for the local CLI. The compiled state stays on the machine running Munin.
-
-## Runtime Surfaces
-
-Core surfaces:
-
-- `munin resume --format prompt` for the startup memory brief
-- `munin brain --format prompt` for the live Session Brain
-- `munin nudge` for strategy-backed next-step recommendations
-- `munin proactivity run --no-spawn` for the morning strategy/continuity evaluation
-- `munin prove --last-resume` for replay/promotion proof
-- `munin friction` for repeated correction and friction patterns
-- `munin recall "topic"` for the compiled Memory OS read path
-- `munin resolve "topic"` for routing a request to the right memory surface
-- `munin metrics get --scope <scope>` for local strategy KPI readings
-- `munin hygiene` for duplicate CLAUDE.md / AGENTS.md / CONTEXT.md guidance reports
-- `munin doctor --scope user` for a fast Memory OS health check
-- `munin install --check-resolvable` for skill/resolver validation
-
-## Testing Build Status
-
 [![CI](https://github.com/inchwormz/munin/actions/workflows/ci.yml/badge.svg)](https://github.com/inchwormz/munin/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/munin-memory.svg)](https://crates.io/crates/munin-memory)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/inchwormz/munin?style=social)](https://github.com/inchwormz/munin)
 
-This is the first clean open-source testing build for GitHub. It is not a final public 1.0 launch.
+Munin is open source under the Apache 2.0 license.
 
-What is ready:
+## What Munin Does
 
-- The `munin` binary builds and installs from this repo.
-- Codex and Claude skill installation is generated from the same resolver table.
-- Doctor release checks verify package guard, Session Brain freshness, recall wiring, and public docs command parity.
-- Strategy KPI slots hydrate from an ingested strategy plan even before current values are filled.
-- Promotion proof requires independent `test-private` and `adversarial-private` replay rows.
+Munin has four local layers:
 
-What still needs real-world proof before final `v0.5.0`:
+1. **Session ingestion** reads first-class Claude and Codex sessions: prompts,
+assistant turns, shell commands, outcomes, corrections, working directories, and
+timestamps. Claude subagent internals are excluded by design.
+2. **Memory compilation** converts those sessions into a local Memory OS:
+evidence-backed facts, active projects, continuity commitments, open loops,
+repeated friction, command outcomes, strategy context, and next steps.
+3. **Strategy and proactivity** turn memory into concrete tasks. `munin nudge`
+now combines strategy red/yellow items with continuity work from previous
+completed sessions, active projects, and verified incomplete tasks.
+4. **Agent access** installs Claude skills, Claude slash commands, Codex skills,
+and a Codex plugin skill bundle so agents can query compiled memory instead of
+trawling raw transcripts.
 
-- Fresh install from a brand-new checkout on another machine or clean user profile.
-- A real Codex and Claude usage sprint using `resume`, `recall`, `nudge`, `prove`, `doctor`, and `hygiene`.
-- README clarity for someone who has never seen the local project.
-- A pass over public docs for private paths, stale command names, and confusing strategy-metrics language.
+No hosted service is required. The compiled state stays on the machine running
+Munin.
 
-## License
+## Install For A New User
 
-Munin is licensed under the Apache 2.0 license.
+Today, Munin distribution is binary-first. A Claude plugin marketplace package is
+not live yet. Install the `munin` binary first, then ask Munin to install the
+agent-facing skills and commands.
 
-The hosted product, when built, lives in a separate private repository and is not part of this Apache-licensed local CLI repo.
-
-## Local Install
-
-Install from the repository checkout during the testing phase:
-
-```powershell
-cargo install --path . --force
-```
-
-After the `munin-memory` crate is published for this testing build, the install command is:
+### Option A: Install From crates.io
 
 ```powershell
-cargo install munin-memory
+cargo install munin-memory --force
 ```
 
-For local development from this working tree:
+This installs a command named `munin`.
 
-```powershell
-cargo build --release
-cargo test
-```
-
-## Local Commands
+Verify it:
 
 ```powershell
 munin --version
-munin resume --format prompt
-munin brain --format prompt
-munin nudge
-munin prove --last-resume
-munin friction --agent codex --last 30d
-munin recall "refund SLA"
-munin resolve "what keeps going wrong?"
-munin metrics get --scope sitesorted-business
-munin proactivity status --scope sitesorted-business
-munin hygiene --root . --format text
-munin doctor --scope user
-munin install --dry-run
 munin install --check-resolvable
 ```
 
-`munin install` archives legacy skill folders into `.munin-legacy` by default. Use `--keep-legacy` to leave them in place, or `--force` to refresh existing Munin skill files.
+Expected check output:
 
-## Memory OS Read Priority
+```text
+install check-resolvable: ... resolver, skill, and fixture checks passed
+```
 
-For opening or resuming work in the current repo, use:
+### Option B: Install From GitHub Source
+
+```powershell
+git clone https://github.com/inchwormz/munin.git
+cd munin
+cargo install --path . --force
+```
+
+Verify it:
+
+```powershell
+munin --version
+munin install --check-resolvable
+```
+
+## Install Agent Skills
+
+After the binary works, install the surfaces for the agent you use.
+
+### Claude Code
+
+```powershell
+munin install --claude --force
+```
+
+This writes:
+
+- `~/.claude/skills/munin*/SKILL.md`
+- `~/.claude/commands/munin*.md`
+
+Restart Claude Code, then use slash commands:
+
+```text
+/munin-memory-os-ingest
+/munin-doctor
+/munin
+/munin-nudge
+/munin-proactive
+/munin-recall topic <query>
+/munin-strategy
+```
+
+### Codex
+
+```powershell
+munin install --codex --force
+```
+
+This writes:
+
+- `~/.codex/skills/munin*/SKILL.md`
+- `~/.codex/plugins/munin-memory/...`
+
+Restart Codex, then use skills:
+
+```text
+$munin-memory-os-ingest
+$munin-doctor
+$munin
+$munin-nudge
+$munin-proactive
+$munin-recall
+$munin-strategy
+```
+
+### Both Agents
+
+```powershell
+munin install --force
+```
+
+By default this installs both Claude and Codex surfaces.
+
+## First Run
+
+Run ingestion once after installing agent surfaces:
+
+```powershell
+munin memory-os ingest --format text
+```
+
+From Claude:
+
+```text
+/munin-memory-os-ingest
+```
+
+From Codex:
+
+```text
+$munin-memory-os-ingest
+```
+
+The installed ingestion skill uses `--force` so demos and repeated test runs
+show timing and corpus counts every time. Direct CLI ingestion without
+`--force` is incremental and will say `current` when nothing new needs import.
+
+Typical output:
+
+```text
+Memory OS Ingest
+----------------
+Elapsed: 46.70s
+Mode: forced replay
+Status: imported
+Sessions processed: 2910
+Shell executions ingested: 35065
+Corrections ingested: 868
+```
+
+Then check health:
+
+```powershell
+munin doctor --scope user --format text
+```
+
+or from Claude/Codex:
+
+```text
+/munin-doctor
+$munin-doctor
+```
+
+## Daily Usage
+
+Use these surfaces at the start of work or when an agent gets lost:
 
 ```powershell
 munin resume --format prompt
-munin memory-os promotion --format text
-```
-
-For questions about the user, operating style, active work, or next steps, use compiled Memory OS projections first:
-
-```powershell
+munin brain --format prompt
+munin nudge --format text
+munin recall --format text "<topic>"
+munin memory-os brief --scope user --format text
 munin memory-os overview --scope user --format text
-munin memory-os profile --scope user --format text
 munin memory-os friction --scope user --format text
 ```
 
-Raw recall/session history is fallback provenance, not the default answer path.
+The agent-facing equivalents are:
 
-## Project Shape
+```text
+/munin
+/munin-brain
+/munin-nudge
+/munin-recall topic <query>
+/munin-friction
+```
 
-- `src/bin/munin.rs` - product CLI entrypoint
+and in Codex:
+
+```text
+$munin
+$munin-brain
+$munin-nudge
+$munin-recall
+$munin-friction
+```
+
+## What `munin nudge` Does
+
+`munin nudge` returns concrete work, not just diagnosis. It combines:
+
+- strategy items that are red/yellow or missing metrics
+- logical next tasks from recent completed sessions and project activity
+- continuity commitments from earlier work
+- verified incomplete tasks and open obligations
+
+Example shape:
+
+```text
+Strategy Nudge
+--------------
+Scope: sitesorted-business
+Suggested task queue:
+1. Address red-state `Outreach reply rate`
+2. Resume incomplete work: Finish recording-ready Munin onboarding
+3. Continue munin-memory: Update docs and verify install surfaces
+Execution:
+- Start with this intervention: Address red-state `Outreach reply rate`.
+- Work it until implemented, verified, or blocked by a concrete recorded blocker.
+```
+
+## Strategy Planning
+
+Munin also ships a strategy skill:
+
+```text
+/munin-strategy
+$munin-strategy
+```
+
+Use it to create or update a One-Page Strategic Plan, bootstrap a strategy
+kernel, or triage tasks against goals. After strategy setup, `munin nudge` uses
+the strategy kernel and metrics snapshot to recommend the next task.
+
+Useful CLI surfaces:
+
+```powershell
+munin strategy setup --scope <scope> --import <strategic-plan.context.json>
+munin strategy status --scope <scope> --format text
+munin strategy recommend --scope <scope> --format text
+munin metrics set <metric_key> <value> --scope <scope>
+```
+
+## Install And Debug Commands
+
+These commands are useful when testing a new install:
+
+```powershell
+munin install --dry-run
+munin install --check-resolvable
+munin install --claude --dry-run
+munin install --claude --force
+munin install --codex --dry-run
+munin install --codex --force
+```
+
+Installed quick surfaces:
+
+```text
+/munin-install-check
+/munin-install-claude-preview
+/munin-install-claude
+/munin-install-codex
+/munin-memory-os-ingest
+/munin-proactive
+```
+
+Codex equivalents use `$...`.
+
+`munin install` archives old Munin skill folders into `.munin-legacy` by default.
+Use `--keep-legacy` to leave them in place.
+
+## Privacy And Storage
+
+Munin reads local agent history and writes a local SQLite-backed Memory OS under
+the platform local data directory. On Windows this is normally:
+
+```text
+%LOCALAPPDATA%\context\history.db
+```
+
+For testing or demos, you can isolate paths:
+
+```powershell
+$env:MUNIN_INSTALL_HOME = "C:\tmp\munin-home"
+$env:MUNIN_SESSION_HOME = "C:\tmp\munin-home"
+$env:MUNIN_DATA_DIR = "C:\tmp\munin-data"
+```
+
+## Current Distribution Status
+
+The current supported install path is:
+
+1. Install the binary from crates.io or GitHub source.
+2. Run `munin install --claude --force`, `munin install --codex --force`, or
+   `munin install --force`.
+3. Restart the agent and use the installed skills/slash commands.
+
+A GitHub-backed Claude plugin marketplace package is planned but not live in
+this testing build.
+
+## Development
+
+Repository layout:
+
+- `src/bin/munin.rs` - CLI entrypoint and skill/command installer
 - `src/analytics/` - Memory OS read surfaces and session ingestion
-- `src/core/` - tracking, strategy, Memory OS models, and projections
-- `src/core/proactivity.rs` - morning proactivity queue, schedule, and run logic
-- `src/session_brain/` - current-session startup brain
+- `src/core/` - durable tracking, Memory OS, strategy, proactivity, and resolver
+- `src/session_brain/` - current-session summary
 - `src/session_intelligence/` - local Claude/Codex session readers
-- `src/proactivity_cmd.rs` - proactivity CLI rendering
+- `src/assets/skills/` - bundled installable prose skills
+- `tests/` - CLI, resolver, package, and fixture tests
 
 `munin proactivity schedule-install` installs the morning runner for the current operating system. On Windows it uses Task Scheduler, on macOS it installs a LaunchAgent, and on Linux it installs a systemd user timer. New installs default to automatic spawning at the scheduled morning run.
 
 ## Notes
 
-- The crate package is `munin-memory`; the installed command is `munin`.
-- The GitHub repository is the source of truth for the open-source CLI.
-- `munin` is the product-facing command.
+Validation:
+
+```powershell
+cargo fmt
+cargo test
+cargo build --bin munin
+munin install --check-resolvable
+```
+
+Package note: the crate package is `munin-memory`; the installed command is
+`munin`.

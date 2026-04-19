@@ -181,6 +181,13 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum MemoryOsCommands {
+    /// Ingest local agent sessions into Memory OS and show timing
+    Ingest {
+        #[arg(long)]
+        force: bool,
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
     /// Compact startup briefing from compiled Memory OS state
     Brief {
         #[arg(long, default_value = "user")]
@@ -874,6 +881,7 @@ fn session_brain_source_is_release_safe(source_status: &str) -> bool {
 
 fn run_memory_os(command: MemoryOsCommands, verbose: u8) -> Result<i32> {
     match command {
+        MemoryOsCommands::Ingest { force, format } => run_memory_os_ingest(force, &format)?,
         MemoryOsCommands::Brief {
             scope,
             project,
@@ -939,6 +947,65 @@ fn run_memory_os(command: MemoryOsCommands, verbose: u8) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+fn run_memory_os_ingest(force: bool, format: &str) -> Result<()> {
+    if !matches!(format, "text" | "json") {
+        anyhow::bail!("unsupported format `{format}`; expected text or json");
+    }
+    let started = std::time::Instant::now();
+    let report = analytics::session_backfill::ensure_memory_os_session_backfill_with_force(force)?;
+    let elapsed = started.elapsed();
+    let elapsed_ms = elapsed.as_millis();
+    match format {
+        "json" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": if report.is_some() { "imported" } else { "current" },
+                    "force": force,
+                    "elapsed_ms": elapsed_ms,
+                    "sessions_processed": report.as_ref().map(|report| report.sessions_processed).unwrap_or(0),
+                    "shells_ingested": report.as_ref().map(|report| report.shells_ingested).unwrap_or(0),
+                    "corrections_ingested": report.as_ref().map(|report| report.corrections_ingested).unwrap_or(0),
+                    "completed_at": report.as_ref().map(|report| report.completed_at.as_str()),
+                }))?
+            );
+        }
+        "text" => {
+            println!("Memory OS Ingest");
+            println!("----------------");
+            println!("Elapsed: {}", format_elapsed(elapsed));
+            println!(
+                "Mode: {}",
+                if force {
+                    "forced replay"
+                } else {
+                    "incremental"
+                }
+            );
+            if let Some(report) = report {
+                println!("Status: imported");
+                println!("Sessions processed: {}", report.sessions_processed);
+                println!("Shell executions ingested: {}", report.shells_ingested);
+                println!("Corrections ingested: {}", report.corrections_ingested);
+                println!("Completed: {}", report.completed_at);
+            } else {
+                println!("Status: current");
+                println!("No new sessions needed ingestion.");
+            }
+        }
+        _ => unreachable!("format is validated before rendering"),
+    }
+    Ok(())
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    if elapsed.as_secs() > 0 {
+        format!("{:.2}s", elapsed.as_secs_f64())
+    } else {
+        format!("{}ms", elapsed.as_millis())
+    }
 }
 
 fn run_strategy(command: StrategyCommands) -> Result<i32> {
@@ -1103,6 +1170,93 @@ struct InstallOptions {
     check_resolvable: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct InstallQuickSkill {
+    name: &'static str,
+    description: &'static str,
+    when_to_use: &'static str,
+    primary_command: &'static str,
+    how_to_read_output: &'static str,
+    done: &'static str,
+}
+
+const INSTALL_QUICK_SKILLS: &[InstallQuickSkill] = &[
+    InstallQuickSkill {
+        name: "munin-install-check",
+        description: "Validate Munin's generated skills and resolver targets before installing.",
+        when_to_use: "Use when demonstrating or verifying that a fresh Munin binary can generate parseable Codex and Claude skills before writing files.",
+        primary_command: "munin install --check-resolvable",
+        how_to_read_output: "Success prints the number of resolver, skill, and fixture checks that passed. Any failure means the installer contract is broken and should be fixed before recording or shipping.",
+        done: "The install contract check passes, and the output names resolver, skill, and fixture checks.",
+    },
+    InstallQuickSkill {
+        name: "munin-install-preview",
+        description: "Preview the Codex skill and plugin files Munin will install.",
+        when_to_use: "Use when you want a recording-friendly dry run that shows the planned Codex skill/plugin writes without changing the target profile.",
+        primary_command: "munin install --codex --dry-run",
+        how_to_read_output: "The output should list `would write` paths, `Codex skill` paths, and `Codex plugin skill` paths, then finish with the dry-run write count.",
+        done: "The dry run shows the planned Codex skills/plugin files and reports planned writes without modifying files.",
+    },
+    InstallQuickSkill {
+        name: "munin-install-codex",
+        description: "Install or refresh Munin's Codex skills and plugin assets.",
+        when_to_use: "Use after previewing the install when you are ready to place Munin's Codex skills and plugin files into the active user profile.",
+        primary_command: "munin install --codex --force",
+        how_to_read_output: "The output should list written Codex skill/plugin paths and end with the number of files written or refreshed.",
+        done: "The Codex skill/plugin files are written, and a new Codex session can invoke the installed Munin skills by name.",
+    },
+    InstallQuickSkill {
+        name: "munin-install-claude-preview",
+        description: "Preview the Claude skills and slash commands Munin will install.",
+        when_to_use: "Use when you want a recording-friendly dry run that shows the planned Claude skill and slash-command writes without changing the target profile.",
+        primary_command: "munin install --claude --dry-run",
+        how_to_read_output: "The output should list `would write` paths, `Claude skill` paths, and `Claude command` paths, then finish with the dry-run write count.",
+        done: "The dry run shows the planned Claude skills and slash commands without modifying files.",
+    },
+    InstallQuickSkill {
+        name: "munin-install-claude",
+        description: "Install or refresh Munin's Claude skills and slash commands.",
+        when_to_use: "Use after previewing the Claude install when you are ready to place Munin's Claude skills and slash commands into the active user profile.",
+        primary_command: "munin install --claude --force",
+        how_to_read_output: "The output should list written Claude skill and command paths and end with the number of files written or refreshed.",
+        done: "The Claude skill and slash-command files are written, and a new Claude session can invoke Munin via `/munin-*` commands.",
+    },
+    InstallQuickSkill {
+        name: "munin-memory-os-ingest",
+        description: "Ingest local agent sessions into Memory OS and show timing.",
+        when_to_use: "Use in demos or fresh-install verification when you want to show Munin importing session data into the local Memory OS store.",
+        primary_command: "munin memory-os ingest --force --format text",
+        how_to_read_output: "The output shows elapsed time plus sessions, shell executions, and corrections imported. The recording command uses `--force` so repeated takes still show timing and corpus counts.",
+        done: "The run reports ingestion timing and either imported session counts or a clear already-current result.",
+    },
+    InstallQuickSkill {
+        name: "munin-proactive",
+        description: "Run Munin's morning strategic proactivity evaluation on demand.",
+        when_to_use: "Use when the user asks to invoke proactivity manually, kick off a morning proactivity cycle now, or see the latest strategic next-move recommendations without waiting for the scheduled 8am task.",
+        primary_command: "munin proactivity run --no-spawn --format text",
+        how_to_read_output: "The output is the recommendation report: strategic nudges with confidence, continuity tasks, any queued job id, and warnings. Because `--no-spawn` is set, no follow-up session is launched; the user can approve the queued brief later with `munin proactivity approve <job-id>`.",
+        done: "The run reports one or more nudges (or a clean no-action state), names any queued job id, and confirms no session was spawned.",
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct InstallProseSkill {
+    name: &'static str,
+    description: &'static str,
+    body: &'static str,
+    references: &'static [(&'static str, &'static str)],
+}
+
+const INSTALL_PROSE_SKILLS: &[InstallProseSkill] = &[InstallProseSkill {
+    name: "munin-strategy",
+    description: "One-Page Strategic Plan (OPSP) coaching shipped with Munin. Use for strategy creation, bootstrap, update, or Eisenhower triage.",
+    body: include_str!("../assets/skills/munin-strategy/SKILL.md"),
+    references: &[(
+        "opsp-template.md",
+        include_str!("../assets/skills/munin-strategy/references/opsp-template.md"),
+    )],
+}];
+
 const LEGACY_SKILL_NAMES: &[&str] = &[
     "munin-discover",
     "munin-gain",
@@ -1122,7 +1276,7 @@ fn run_install(options: InstallOptions) -> Result<()> {
     }
     let install_claude = options.claude || !options.codex;
     let install_codex = options.codex || !options.claude;
-    let home = dirs::home_dir().context("could not determine home directory")?;
+    let home = install_home_dir()?;
     let mut writes = 0usize;
 
     if install_claude {
@@ -1134,6 +1288,8 @@ fn run_install(options: InstallOptions) -> Result<()> {
             options.keep_legacy,
             "Claude",
         )?;
+        let command_root = home.join(".claude").join("commands");
+        writes += install_claude_commands_at(&command_root, options.force, options.dry_run)?;
     }
     if install_codex {
         let skill_root = home.join(".codex").join("skills");
@@ -1152,12 +1308,49 @@ fn run_install(options: InstallOptions) -> Result<()> {
         println!("Munin install dry-run complete: {writes} planned writes.");
     } else {
         println!("Munin install complete: {writes} files written or refreshed.");
+        emit_strategy_bootstrap_hint();
     }
     Ok(())
 }
 
+fn emit_strategy_bootstrap_hint() {
+    let has_kernel = match core::strategy::discover_inspect_reports(1) {
+        Ok(reports) => !reports.is_empty(),
+        Err(_) => false,
+    };
+    if has_kernel {
+        return;
+    }
+    let scope = core::strategy::default_strategy_scope_hint();
+    println!();
+    println!("No strategy kernel detected yet. Want a first-cut OPSP plan?");
+    println!("  Bootstrap a starter (auto-populated, refine later):");
+    println!("    munin strategy setup --scope {scope} --bootstrap-claude");
+    println!("  Refine interactively with the OPSP coach:");
+    println!("    /munin-strategy        (Claude Code)");
+    println!("    skill run munin-strategy   (Codex)");
+}
+
+fn install_home_dir() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("MUNIN_INSTALL_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    dirs::home_dir().context("could not determine home directory")
+}
+
 fn run_check_resolvable() -> Result<()> {
     let mut checked = 0usize;
+    for skill in INSTALL_QUICK_SKILLS {
+        validate_munin_command(skill.primary_command).with_context(|| {
+            format!(
+                "install quick skill `{}` command is not resolvable",
+                skill.name
+            )
+        })?;
+        let rendered = render_install_quick_skill(skill);
+        assert_install_quick_skill_contract(skill.name, &rendered, skill)?;
+        checked += 2;
+    }
     for rule in core::access_layer::intent_rules::INTENT_RULES {
         let command = rule
             .primary_command
@@ -1213,6 +1406,30 @@ fn run_check_resolvable() -> Result<()> {
         checked += 1;
     }
     println!("install check-resolvable: {checked} resolver, skill, and fixture checks passed");
+    Ok(())
+}
+
+fn assert_install_quick_skill_contract(
+    skill_name: &str,
+    rendered: &str,
+    skill: &InstallQuickSkill,
+) -> Result<()> {
+    for section in [
+        "## When to use",
+        "## Primary command",
+        "## How to read output",
+        "## Trust",
+        "## Done",
+    ] {
+        if !rendered.contains(section) {
+            anyhow::bail!(
+                "generated install quick skill `{skill_name}` is missing section `{section}`"
+            );
+        }
+    }
+    if !rendered.contains(skill.primary_command) {
+        anyhow::bail!("generated install quick skill `{skill_name}` is missing its command");
+    }
     Ok(())
 }
 
@@ -1406,6 +1623,65 @@ fn install_skills_at(
             println!("{label} skill: {}", path.display());
         }
     }
+    for skill in INSTALL_QUICK_SKILLS {
+        let path = root.join(skill.name).join("SKILL.md");
+        let content = render_install_quick_skill(skill);
+        if write_installer_file(&path, &content, force, dry_run)? {
+            writes += 1;
+            println!("{label} skill: {}", path.display());
+        }
+    }
+    for skill in INSTALL_PROSE_SKILLS {
+        let skill_dir = root.join(skill.name);
+        let path = skill_dir.join("SKILL.md");
+        if write_installer_file(&path, skill.body, force, dry_run)? {
+            writes += 1;
+            println!("{label} skill: {}", path.display());
+        }
+        for (filename, content) in skill.references {
+            let ref_path = skill_dir.join("references").join(filename);
+            if write_installer_file(&ref_path, content, force, dry_run)? {
+                writes += 1;
+                println!("{label} skill reference: {}", ref_path.display());
+            }
+        }
+    }
+    Ok(writes)
+}
+
+fn install_claude_commands_at(root: &Path, force: bool, dry_run: bool) -> Result<usize> {
+    let mut writes = 0usize;
+    let umbrella = core::access_layer::intent_rules::UMBRELLA_SKILL;
+    let path = root.join(format!("{}.md", umbrella.name));
+    let content = render_claude_umbrella_command();
+    if write_installer_file(&path, &content, force, dry_run)? {
+        writes += 1;
+        println!("Claude command: {}", path.display());
+    }
+    for rule in core::access_layer::intent_rules::INTENT_RULES {
+        let path = root.join(format!("{}.md", rule.skill_name));
+        let content = render_claude_narrow_command(rule);
+        if write_installer_file(&path, &content, force, dry_run)? {
+            writes += 1;
+            println!("Claude command: {}", path.display());
+        }
+    }
+    for skill in INSTALL_QUICK_SKILLS {
+        let path = root.join(format!("{}.md", skill.name));
+        let content = render_claude_install_quick_command(skill);
+        if write_installer_file(&path, &content, force, dry_run)? {
+            writes += 1;
+            println!("Claude command: {}", path.display());
+        }
+    }
+    for skill in INSTALL_PROSE_SKILLS {
+        let path = root.join(format!("{}.md", skill.name));
+        let content = render_claude_install_prose_command(skill);
+        if write_installer_file(&path, &content, force, dry_run)? {
+            writes += 1;
+            println!("Claude command: {}", path.display());
+        }
+    }
     Ok(writes)
 }
 
@@ -1493,6 +1769,29 @@ fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Resul
             println!("Codex plugin skill: {}", path.display());
         }
     }
+    for skill in INSTALL_QUICK_SKILLS {
+        let path = plugin_root.join("skills").join(skill.name).join("SKILL.md");
+        let content = render_install_quick_skill(skill);
+        if write_installer_file(&path, &content, force, dry_run)? {
+            writes += 1;
+            println!("Codex plugin skill: {}", path.display());
+        }
+    }
+    for skill in INSTALL_PROSE_SKILLS {
+        let skill_dir = plugin_root.join("skills").join(skill.name);
+        let path = skill_dir.join("SKILL.md");
+        if write_installer_file(&path, skill.body, force, dry_run)? {
+            writes += 1;
+            println!("Codex plugin skill: {}", path.display());
+        }
+        for (filename, content) in skill.references {
+            let ref_path = skill_dir.join("references").join(filename);
+            if write_installer_file(&ref_path, content, force, dry_run)? {
+                writes += 1;
+                println!("Codex plugin skill reference: {}", ref_path.display());
+            }
+        }
+    }
     Ok(writes)
 }
 
@@ -1523,6 +1822,48 @@ fn render_umbrella_skill() -> String {
     format!(
         "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Flow\n1. Run `munin resolve --format text \"<user ask>\"`.\n2. Run the returned command.\n3. Follow the matching narrow skill's Trust, Fallback, What not to do, and Done rules.\n\n## Resolver output\nRoutes: {}.\n\nLive-session continuity routes to `brain` only when Session Brain is live. Fallback or stale continuity routes to `resume`.\n\n## Trust\n- Trust the route unless the user clearly asked for a different narrow surface.\n- If route is `recall` and the command returns zero topic matches, do not silently fall back to overview.\n- If route is `brain`, check the freshness label before saying anything is current.\n\n## Fallback\n- If the route looks wrong, ask `munin resolve` with the user's exact words and compare the route to the narrow skill descriptions.\n- If the command fails to parse, run `munin install --check-resolvable` before using installed skills.\n\n## Done\nThe user has a compiled answer from the chosen Munin surface, not a raw transcript dump.\n",
         umbrella.name, umbrella.description, umbrella.name, umbrella.description_expanded, routes
+    )
+}
+
+fn render_install_quick_skill(skill: &InstallQuickSkill) -> String {
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Primary command\n\n```powershell\n{}\n```\n\n## How to read output\n{}\n\n## Trust\n- Treat this as an installer demonstration skill, not a memory read surface.\n- Do not change unrelated user data while running it.\n- If this is a fresh-install recording, set `MUNIN_INSTALL_HOME` to the intended demo profile before running it.\n\n## Done\n{}\n",
+        skill.name,
+        skill.description,
+        skill.name,
+        skill.when_to_use,
+        skill.primary_command,
+        skill.how_to_read_output,
+        skill.done
+    )
+}
+
+fn render_claude_umbrella_command() -> String {
+    let umbrella = core::access_layer::intent_rules::UMBRELLA_SKILL;
+    format!(
+        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If the user provided arguments, pass them through: $ARGUMENTS\n",
+        umbrella.description, umbrella.name
+    )
+}
+
+fn render_claude_narrow_command(rule: &core::access_layer::intent_rules::IntentRule) -> String {
+    format!(
+        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If the user provided arguments, use them as the request context: $ARGUMENTS\n",
+        rule.description, rule.skill_name
+    )
+}
+
+fn render_claude_install_quick_command(skill: &InstallQuickSkill) -> String {
+    format!(
+        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If this is a recording or fresh-install demo, keep the output concise and preserve the command timing/counts. Arguments: $ARGUMENTS\n",
+        skill.description, skill.name
+    )
+}
+
+fn render_claude_install_prose_command(skill: &InstallProseSkill) -> String {
+    format!(
+        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If the user provided arguments, use them as the request context: $ARGUMENTS\n",
+        skill.description, skill.name
     )
 }
 
@@ -1686,6 +2027,43 @@ mod tests {
     }
 
     #[test]
+    fn install_quick_skills_render_parseable_commands() {
+        let mut names = std::collections::BTreeSet::new();
+        for skill in INSTALL_QUICK_SKILLS {
+            assert!(
+                names.insert(skill.name),
+                "duplicate install quick skill {}",
+                skill.name
+            );
+            validate_munin_command(skill.primary_command)
+                .unwrap_or_else(|err| panic!("{} did not parse: {err}", skill.primary_command));
+            let rendered = render_install_quick_skill(skill);
+            assert_install_quick_skill_contract(skill.name, &rendered, skill)
+                .unwrap_or_else(|err| panic!("{} contract failed: {err}", skill.name));
+        }
+        assert_eq!(names.len(), 7);
+    }
+
+    #[test]
+    fn claude_slash_commands_invoke_matching_skills() {
+        let umbrella = render_claude_umbrella_command();
+        assert!(umbrella.contains("Invoke the `munin` skill"));
+        assert!(umbrella.contains("disable-model-invocation: true"));
+
+        let doctor = core::access_layer::intent_rules::intent_by_skill_name("munin-doctor")
+            .expect("doctor rule");
+        let doctor_command = render_claude_narrow_command(doctor);
+        assert!(doctor_command.contains("Invoke the `munin-doctor` skill"));
+
+        let ingest = INSTALL_QUICK_SKILLS
+            .iter()
+            .find(|skill| skill.name == "munin-memory-os-ingest")
+            .expect("ingest quick skill");
+        let ingest_command = render_claude_install_quick_command(ingest);
+        assert!(ingest_command.contains("Invoke the `munin-memory-os-ingest` skill"));
+    }
+
+    #[test]
     fn access_layer_registry_has_unique_routes_and_skill_names() {
         let mut routes = std::collections::BTreeSet::new();
         let mut skills = std::collections::BTreeSet::new();
@@ -1709,6 +2087,9 @@ mod tests {
     #[test]
     fn memory_os_subcommands_parse() {
         parse_ok(&["munin", "memory-os", "brief"]);
+        parse_ok(&["munin", "memory-os", "ingest"]);
+        parse_ok(&["munin", "memory-os", "ingest", "--force"]);
+        parse_ok(&["munin", "memory-os", "ingest", "--format", "json"]);
         parse_ok(&["munin", "memory-os", "overview"]);
         parse_ok(&["munin", "memory-os", "doctor"]);
         parse_ok(&["munin", "memory-os", "friction"]);

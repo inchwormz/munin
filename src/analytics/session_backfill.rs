@@ -103,6 +103,12 @@ pub fn get_memory_os_session_backfill_status() -> Result<SessionBackfillStatus> 
 }
 
 pub fn ensure_memory_os_session_backfill() -> Result<Option<SessionBackfillReport>> {
+    ensure_memory_os_session_backfill_with_force(false)
+}
+
+pub fn ensure_memory_os_session_backfill_with_force(
+    force: bool,
+) -> Result<Option<SessionBackfillReport>> {
     if cfg!(test)
         || std::env::var("CONTEXT_SKIP_MEMORY_OS_ONBOARDING")
             .ok()
@@ -120,7 +126,15 @@ pub fn ensure_memory_os_session_backfill() -> Result<Option<SessionBackfillRepor
     }
 
     let mut state = load_state()?;
-    if should_skip_incremental_backfill(&state) {
+    if force {
+        state.completed_at = None;
+        state.last_checked_at = None;
+        state.processed_session_ids.clear();
+        state.sessions_processed = 0;
+        state.shells_ingested = 0;
+        state.corrections_ingested = 0;
+    }
+    if !force && should_skip_incremental_backfill(&state) {
         return Ok(None);
     }
 
@@ -1010,8 +1024,7 @@ fn hash_text(text: &str) -> String {
 }
 
 fn onboarding_state_path() -> Result<PathBuf> {
-    let data_dir = dirs::data_local_dir().context("failed to resolve local data directory")?;
-    let root = data_dir.join(crate::core::constants::CONTEXT_DATA_DIR);
+    let root = crate::core::config::context_data_dir()?;
     fs::create_dir_all(&root)?;
     Ok(root.join(ONBOARDING_STATE_FILE))
 }

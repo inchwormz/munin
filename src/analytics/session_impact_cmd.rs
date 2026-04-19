@@ -815,7 +815,7 @@ fn load_claude_sessions(
     since_days: Option<u64>,
     before_cutoff: Option<NaiveDate>,
 ) -> Result<Vec<SessionRecord>> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = session_home_dir() else {
         return Ok(Vec::new());
     };
     let root = home.join(".claude").join("projects");
@@ -916,7 +916,7 @@ fn load_codex_history_sessions(
     since_days: Option<u64>,
     before_cutoff: Option<NaiveDate>,
 ) -> Result<Vec<SessionRecord>> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = session_home_dir() else {
         return Ok(Vec::new());
     };
     let history_path = home.join(".codex").join("history.jsonl");
@@ -1007,11 +1007,16 @@ fn discover_codex_session_roots() -> Result<Vec<PathBuf>> {
     let mut roots = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = session_home_dir() {
         let primary = home.join(".codex").join("sessions");
         if primary.exists() && seen.insert(primary.clone()) {
             roots.push(primary);
         }
+    }
+
+    if explicit_session_home_dir().is_some() {
+        roots.sort();
+        return Ok(roots);
     }
 
     let projects_root = Path::new("C:\\Users\\OEM\\Projects");
@@ -1042,6 +1047,16 @@ fn discover_codex_session_roots() -> Result<Vec<PathBuf>> {
     }
 
     Ok(roots)
+}
+
+fn session_home_dir() -> Option<PathBuf> {
+    explicit_session_home_dir().or_else(dirs::home_dir)
+}
+
+fn explicit_session_home_dir() -> Option<PathBuf> {
+    std::env::var_os("MUNIN_SESSION_HOME")
+        .or_else(|| std::env::var_os("MUNIN_INSTALL_HOME"))
+        .map(PathBuf::from)
 }
 
 fn session_matches_filters(
