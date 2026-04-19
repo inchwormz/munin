@@ -1820,7 +1820,7 @@ fn render_umbrella_skill() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Flow\n1. Run `munin resolve --format text \"<user ask>\"`.\n2. Run the returned command.\n3. Follow the matching narrow skill's Trust, Fallback, What not to do, and Done rules.\n\n## Resolver output\nRoutes: {}.\n\nLive-session continuity routes to `brain` only when Session Brain is live. Fallback or stale continuity routes to `resume`.\n\n## Trust\n- Trust the route unless the user clearly asked for a different narrow surface.\n- If route is `recall` and the command returns zero topic matches, do not silently fall back to overview.\n- If route is `brain`, check the freshness label before saying anything is current.\n\n## Fallback\n- If the route looks wrong, ask `munin resolve` with the user's exact words and compare the route to the narrow skill descriptions.\n- If the command fails to parse, run `munin install --check-resolvable` before using installed skills.\n\n## Done\nThe user has a compiled answer from the chosen Munin surface, not a raw transcript dump.\n",
+        "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Flow\n0. If the user only invoked Munin with no substantive ask, stop and ask what they want Munin to check. Do not run recall, doctor, proactivity, or any status command for a bare invocation.\n1. Run `munin resolve --format text \"<user ask>\"`.\n2. Run the returned command.\n3. Follow the matching narrow skill's Trust, Fallback, What not to do, and Done rules.\n\n## Resolver output\nRoutes: {}.\n\nLive-session continuity routes to `brain` only when Session Brain is live. Fallback or stale continuity routes to `resume`.\n\n## Trust\n- Trust the route unless the user clearly asked for a different narrow surface.\n- If route is `recall` and the command returns zero topic matches, do not silently fall back to overview.\n- If route is `brain`, check the freshness label before saying anything is current.\n\n## Fallback\n- If the route looks wrong, ask `munin resolve` with the user's exact words and compare the route to the narrow skill descriptions.\n- If the command fails to parse, run `munin install --check-resolvable` before using installed skills.\n\n## Done\nThe user has a compiled answer from the chosen Munin surface, not a raw transcript dump.\n",
         umbrella.name, umbrella.description, umbrella.name, umbrella.description_expanded, routes
     )
 }
@@ -2094,6 +2094,13 @@ mod tests {
         parse_ok(&["munin", "memory-os", "doctor"]);
         parse_ok(&["munin", "memory-os", "friction"]);
         parse_ok(&["munin", "memory-os", "promotion"]);
+    }
+
+    #[test]
+    fn umbrella_skill_does_not_auto_run_for_bare_invocation() {
+        let content = render_umbrella_skill();
+        assert!(content.contains("only invoked Munin"));
+        assert!(content.contains("Do not run recall, doctor, proactivity"));
     }
 
     #[test]
