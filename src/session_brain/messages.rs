@@ -25,7 +25,7 @@ pub struct SessionMessages {
 struct TranscriptTarget {
     provider: SessionBrainProvider,
     session_id: String,
-    path: PathBuf,
+    path: Option<PathBuf>,
     source_status: String,
 }
 
@@ -67,9 +67,21 @@ pub fn read_current_session_messages(
         });
     };
 
+    let Some(path) = target.path.as_deref() else {
+        return Ok(SessionMessages {
+            session_id: Some(target.session_id),
+            provider: target.provider,
+            transcript_path: None,
+            transcript_modified_at: None,
+            source_status: target.source_status,
+            user: Vec::new(),
+            assistant: Vec::new(),
+        });
+    };
+
     let mut messages = match target.provider {
-        SessionBrainProvider::Codex => parse_codex_messages(&target.path, &target.session_id),
-        SessionBrainProvider::Claude => parse_claude_messages(&target.path, &target.session_id),
+        SessionBrainProvider::Codex => parse_codex_messages(path, &target.session_id),
+        SessionBrainProvider::Claude => parse_claude_messages(path, &target.session_id),
         SessionBrainProvider::Unknown => Ok(SessionMessages {
             session_id: Some(target.session_id),
             provider: SessionBrainProvider::Unknown,
@@ -81,9 +93,9 @@ pub fn read_current_session_messages(
         }),
     }?;
     messages.transcript_path = Some(normalize_windows_path_string(
-        target.path.to_string_lossy().as_ref(),
+        path.to_string_lossy().as_ref(),
     ));
-    messages.transcript_modified_at = transcript_modified_at(&target.path);
+    messages.transcript_modified_at = transcript_modified_at(path);
     messages.source_status = target.source_status;
     Ok(messages)
 }
@@ -131,23 +143,41 @@ fn resolve_transcript_target(
     allow_session_fallback: bool,
 ) -> Result<Option<TranscriptTarget>> {
     if let Ok(session_id) = std::env::var("CODEX_THREAD_ID") {
-        if let Some(path) = find_codex_session_path(&session_id)? {
+        let session_id = session_id.trim().to_string();
+        if !session_id.is_empty() {
+            if let Some(path) = find_codex_session_path(&session_id)? {
+                return Ok(Some(TranscriptTarget {
+                    provider: SessionBrainProvider::Codex,
+                    session_id,
+                    path: Some(path),
+                    source_status: "live".to_string(),
+                }));
+            }
             return Ok(Some(TranscriptTarget {
                 provider: SessionBrainProvider::Codex,
                 session_id,
-                path,
-                source_status: "live".to_string(),
+                path: None,
+                source_status: "live-missing-transcript".to_string(),
             }));
         }
     }
 
     if let Ok(session_id) = std::env::var("CLAUDE_SESSION_ID") {
-        if let Some(path) = find_claude_session_path(&session_id)? {
+        let session_id = session_id.trim().to_string();
+        if !session_id.is_empty() {
+            if let Some(path) = find_claude_session_path(&session_id)? {
+                return Ok(Some(TranscriptTarget {
+                    provider: SessionBrainProvider::Claude,
+                    session_id,
+                    path: Some(path),
+                    source_status: "live".to_string(),
+                }));
+            }
             return Ok(Some(TranscriptTarget {
                 provider: SessionBrainProvider::Claude,
                 session_id,
-                path,
-                source_status: "live".to_string(),
+                path: None,
+                source_status: "live-missing-transcript".to_string(),
             }));
         }
     }
@@ -164,14 +194,14 @@ fn resolve_transcript_target(
                 Some(TranscriptTarget {
                     provider: SessionBrainProvider::Codex,
                     session_id: left.session_id,
-                    path: left.path,
+                    path: Some(left.path),
                     source_status: fallback_source_status(left.modified_at),
                 })
             } else {
                 Some(TranscriptTarget {
                     provider: SessionBrainProvider::Claude,
                     session_id: right.session_id,
-                    path: right.path,
+                    path: Some(right.path),
                     source_status: fallback_source_status(right.modified_at),
                 })
             }
@@ -179,13 +209,13 @@ fn resolve_transcript_target(
         (Some(candidate), None) => Some(TranscriptTarget {
             provider: SessionBrainProvider::Codex,
             session_id: candidate.session_id,
-            path: candidate.path,
+            path: Some(candidate.path),
             source_status: fallback_source_status(candidate.modified_at),
         }),
         (None, Some(candidate)) => Some(TranscriptTarget {
             provider: SessionBrainProvider::Claude,
             session_id: candidate.session_id,
-            path: candidate.path,
+            path: Some(candidate.path),
             source_status: fallback_source_status(candidate.modified_at),
         }),
         (None, None) => None,
@@ -982,8 +1012,40 @@ fn project_matches(cwd: &str, project_root: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn fixture_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -991,6 +1053,54 @@ mod tests {
             .join("fixtures")
             .join("session_brain")
             .join(name)
+    }
+
+    #[test]
+    fn missing_live_codex_transcript_does_not_fall_back_to_latest_session() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _codex = EnvVarGuard::set(
+            "CODEX_THREAD_ID",
+            "munin-missing-live-codex-transcript-test-id",
+        );
+        let _claude = EnvVarGuard::remove("CLAUDE_SESSION_ID");
+
+        let messages = read_current_session_messages(Path::new(env!("CARGO_MANIFEST_DIR")), true)
+            .expect("read messages");
+
+        assert_eq!(messages.provider, SessionBrainProvider::Codex);
+        assert_eq!(
+            messages.session_id.as_deref(),
+            Some("munin-missing-live-codex-transcript-test-id")
+        );
+        assert_eq!(messages.source_status, "live-missing-transcript");
+        assert!(messages.transcript_path.is_none());
+        assert!(messages.transcript_modified_at.is_none());
+        assert!(messages.user.is_empty());
+        assert!(messages.assistant.is_empty());
+    }
+
+    #[test]
+    fn missing_live_claude_transcript_does_not_fall_back_to_latest_session() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _codex = EnvVarGuard::remove("CODEX_THREAD_ID");
+        let _claude = EnvVarGuard::set(
+            "CLAUDE_SESSION_ID",
+            "munin-missing-live-claude-transcript-test-id",
+        );
+
+        let messages = read_current_session_messages(Path::new(env!("CARGO_MANIFEST_DIR")), true)
+            .expect("read messages");
+
+        assert_eq!(messages.provider, SessionBrainProvider::Claude);
+        assert_eq!(
+            messages.session_id.as_deref(),
+            Some("munin-missing-live-claude-transcript-test-id")
+        );
+        assert_eq!(messages.source_status, "live-missing-transcript");
+        assert!(messages.transcript_path.is_none());
+        assert!(messages.transcript_modified_at.is_none());
+        assert!(messages.user.is_empty());
+        assert!(messages.assistant.is_empty());
     }
 
     #[test]

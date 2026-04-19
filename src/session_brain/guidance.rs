@@ -6,7 +6,7 @@ pub fn build_guidance(user: &SessionBrainUserContext) -> SessionBrainGuidance {
             .to_string(),
         "Prefer the current project capsule and strategy context over broader user memory."
             .to_string(),
-        "Use Memory OS read surfaces before raw recall for user/profile/current-work questions."
+        "Use Memory OS read surfaces before raw recall for stable user profile and friction questions."
             .to_string(),
         "Treat successful shell history as noise unless it changed state or verified a fact."
             .to_string(),
