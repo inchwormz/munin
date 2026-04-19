@@ -6,7 +6,19 @@ Current testing build: `v0.5.0-beta.1`.
 
 ## What It Is
 
-`munin` reads local Claude/Codex sessions, compiles startup memory, surfaces repeated friction, and keeps noisy shell output out of agent context. It is the memory product, not the old command-wrapper package.
+`munin` reads local Claude/Codex sessions, compiles startup memory, surfaces repeated friction, and keeps noisy shell output out of agent context.
+
+## How It Works
+
+Munin has three layers:
+
+1. **Session ingestion** reads local Claude, Codex, and archived session data: prompts, assistant turns, shell commands, outcomes, corrections, working directories, and timestamps.
+2. **Memory compilation** converts those raw sessions into a local Memory OS: evidence-backed facts, current project goals, open loops, repeated mistakes, command outcomes, strategy pressure, and proof rows.
+3. **Agent access** exposes the compiled memory through CLI surfaces and installed Codex/Claude skills, so agents query structured memory instead of searching raw transcripts.
+
+No hosted service is required for the local CLI. The compiled state stays on the machine running Munin.
+
+## Runtime Surfaces
 
 Core surfaces:
 
@@ -21,6 +33,14 @@ Core surfaces:
 - `munin hygiene` for duplicate CLAUDE.md / AGENTS.md / CONTEXT.md guidance reports
 - `munin doctor --scope user` for a fast Memory OS health check
 - `munin install --check-resolvable` for skill/resolver validation
+
+## Proactivity Status
+
+Munin's morning proactivity runner is in dogfood, but it is not part of this public beta CLI yet.
+
+The proactivity runtime evaluates strategy and continuity on a schedule, writes a morning brief, creates an approval queue item, and can launch an interactive agent session. That lane is still being proven before it moves into the open-source `munin` binary.
+
+The current beta includes the compiler and read surfaces that proactivity depends on: session ingestion, strategy metrics, Memory OS projections, nudges, proof, and Doctor checks.
 
 ## Testing Build Status
 
@@ -91,7 +111,7 @@ munin install --dry-run
 munin install --check-resolvable
 ```
 
-`munin install` archives old Munin/context-wrapper skill names into `.munin-legacy` by default. Use `--keep-legacy` if you want the old skill folders left in place, or `--force` to refresh existing Munin skill files.
+`munin install` archives legacy skill folders into `.munin-legacy` by default. Use `--keep-legacy` to leave them in place, or `--force` to refresh existing Munin skill files.
 
 ## Memory OS Read Priority
 
@@ -123,5 +143,5 @@ Raw recall/session history is fallback provenance, not the default answer path.
 ## Notes
 
 - The crate package is `munin-memory`; the installed command is `munin`.
-- Treat the current working tree as the source of truth.
+- The GitHub repository is the source of truth for the open-source CLI.
 - `munin` is the product-facing command.
