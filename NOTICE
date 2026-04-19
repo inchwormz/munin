@@ -1,0 +1,9 @@
+Munin Memory
+Copyright 2026 John McKeown
+
+This product includes software developed by the Rust open-source ecosystem
+and other third-party dependency authors, as listed in Cargo.lock.
+
+The name "Munin" is used as a product name. The Apache 2.0 license grants
+copyright and patent permissions for this code, but does not grant trademark
+rights in the Munin name or branding.

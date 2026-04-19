@@ -1,12 +1,11 @@
 [package]
 name = "munin-memory"
-version = "0.44.0"
+version = "0.5.0-beta.1"
 edition = "2021"
 autobins = false
-publish = false
 authors = ["John McKeown"]
 description = "Local memory system for agent-driven development"
-license-file = "LICENSE"
+license = "Apache-2.0"
 readme = "README.md"
 homepage = "https://muninmemory.com"
 keywords = ["cli", "llm", "memory", "agents", "productivity"]
@@ -14,8 +13,11 @@ categories = ["command-line-utilities", "development-tools"]
 include = [
     "/Cargo.lock",
     "/Cargo.toml",
-    "/LICENSE",
-    "/README.md",
+"/LICENSE",
+"/NOTICE",
+"/CONTRIBUTING.md",
+"/CODE_OF_CONDUCT.md",
+"/README.md",
     "/build.rs",
     "/src/lib.rs",
     "/src/bin/munin.rs",

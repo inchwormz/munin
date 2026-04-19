@@ -2,6 +2,8 @@
 
 Local memory system for agent-driven development.
 
+Current testing build: `v0.5.0-beta.1`.
+
 ## What It Is
 
 `munin` reads local Claude/Codex sessions, compiles startup memory, surfaces repeated friction, and keeps noisy shell output out of agent context. It is the memory product, not the old command-wrapper package.
@@ -20,15 +22,49 @@ Core surfaces:
 - `munin doctor --scope user` for a fast Memory OS health check
 - `munin install --check-resolvable` for skill/resolver validation
 
+## Testing Build Status
+
+[![CI](https://github.com/inchwormz/munin/actions/workflows/ci.yml/badge.svg)](https://github.com/inchwormz/munin/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/munin-memory.svg)](https://crates.io/crates/munin-memory)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/inchwormz/munin?style=social)](https://github.com/inchwormz/munin)
+
+This is the first clean open-source testing build for GitHub. It is not a final public 1.0 launch.
+
+What is ready:
+
+- The `munin` binary builds and installs from this repo.
+- Codex and Claude skill installation is generated from the same resolver table.
+- Doctor release checks verify package guard, Session Brain freshness, recall wiring, and public docs command parity.
+- Strategy KPI slots hydrate from an ingested strategy plan even before current values are filled.
+- Promotion proof requires independent `test-private` and `adversarial-private` replay rows.
+
+What still needs real-world proof before final `v0.5.0`:
+
+- Fresh install from a brand-new checkout on another machine or clean user profile.
+- A real Codex and Claude usage sprint using `resume`, `recall`, `nudge`, `prove`, `doctor`, and `hygiene`.
+- README clarity for someone who has never seen the local project.
+- A pass over public docs for private paths, stale command names, and confusing strategy-metrics language.
+
+## License
+
+Munin is licensed under the Apache 2.0 license.
+
+The hosted product, when built, lives in a separate private repository and is not part of this Apache-licensed local CLI repo.
+
 ## Local Install
 
-Install from this local checkout:
+Install from the repository checkout during the testing phase:
 
 ```powershell
-cargo install --path .
+cargo install --path . --force
 ```
 
-The crate is marked `publish = false`; Munin is distributed from the local repository until a separate release process is approved.
+After the `munin-memory` crate is published for this testing build, the install command is:
+
+```powershell
+cargo install munin-memory
+```
 
 For local development from this working tree:
 

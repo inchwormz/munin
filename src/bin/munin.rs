@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use munin_memory::{analytics, core, session_brain, strategy_cmd};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -638,12 +638,15 @@ fn run_release_doctor_checks(repo_root: Option<&str>, site_root: Option<&str>) -
     let cargo_toml = Path::new(repo_root).join("Cargo.toml");
     let cargo = fs::read_to_string(&cargo_toml)
         .with_context(|| format!("failed to read {}", cargo_toml.display()))?;
-    if !cargo.lines().any(|line| line.trim() == "publish = false") {
-        anyhow::bail!("release doctor failed: Cargo.toml must contain `publish = false`");
+    if !cargo
+        .lines()
+        .any(|line| line.trim() == r#"license = "Apache-2.0""#)
+    {
+        anyhow::bail!("release doctor failed: Cargo.toml must declare Apache-2.0");
     }
     let brain = session_brain::build_current_session_brain()
         .context("release doctor failed: could not inspect Session Brain")?;
-    if brain.meta.source_status == "stale-fallback" {
+    if !session_brain_source_is_release_safe(&brain.meta.source_status) {
         anyhow::bail!("release doctor failed: Session Brain is reading stale fallback context");
     }
     let recall_source = fs::read_to_string(Path::new(repo_root).join("src/bin/munin.rs"))
@@ -679,8 +682,6 @@ fn assert_public_docs_parity(repo_root: &Path, site_root: Option<&Path>) -> Resu
         "munin cargo test",
         "munin git diff",
         "munin replay-eval",
-        "cargo install munin-memory",
-        "crates.io",
     ];
     let mut docs = vec![repo_root.join("README.md")];
     if let Some(site_root) = site_root {
@@ -708,6 +709,10 @@ fn assert_public_docs_parity(repo_root: &Path, site_root: Option<&Path>) -> Resu
         }
     }
     Ok(())
+}
+
+fn session_brain_source_is_release_safe(source_status: &str) -> bool {
+    !matches!(source_status, "stale" | "stale-fallback")
 }
 
 fn run_memory_os(command: MemoryOsCommands, verbose: u8) -> Result<i32> {
@@ -901,15 +906,22 @@ fn run_install(options: InstallOptions) -> Result<()> {
 fn run_check_resolvable() -> Result<()> {
     let mut checked = 0usize;
     for rule in core::access_layer::intent_rules::INTENT_RULES {
-        let command = rule.primary_command.replace("<query>", "resolver");
+        let command = rule
+            .primary_command
+            .replace("<query>", "resolver decisions");
         validate_munin_command(command.as_str())
-            .with_context(|| format!("generated skill `{}` is not resolvable", rule.skill_name))?;
+            .with_context(|| format!("skill `{}` command is not resolvable", rule.skill_name))?;
+        checked += 1;
         if let Some(fallback) = rule.fallback_command {
             if fallback.command.starts_with("munin ") {
-                validate_munin_command(fallback.command.replace("<query>", "resolver").as_str())
-                    .with_context(|| {
-                        format!("fallback for `{}` is not resolvable", rule.skill_name)
-                    })?;
+                validate_munin_command(
+                    fallback
+                        .command
+                        .replace("<query>", "resolver decisions")
+                        .as_str(),
+                )
+                .with_context(|| format!("fallback for `{}` is not resolvable", rule.skill_name))?;
+                checked += 1;
             } else if fallback.command != "qmd \"<query>\"" {
                 anyhow::bail!(
                     "external fallback for `{}` must be an explicit raw archive fallback",
@@ -928,29 +940,15 @@ fn run_check_resolvable() -> Result<()> {
     if !umbrella.contains("munin resolve") || !umbrella.contains("narrow skill") {
         anyhow::bail!("umbrella skill is missing resolver flow");
     }
+    checked += 1;
     for command in core::resolver::known_resolver_commands() {
         if command.starts_with("munin ") {
-            validate_munin_command(command.replace("<query>", "resolver").as_str())
+            validate_munin_command(command.replace("<query>", "resolver decisions").as_str())
                 .with_context(|| format!("resolver target `{command}` is not resolvable"))?;
         }
         checked += 1;
     }
-    for (query, expected_route) in [
-        ("what was I doing?", "brain"),
-        ("what keeps going wrong?", "friction"),
-        ("what should I do next?", "nudge"),
-        ("remember resolver decisions", "recall"),
-        ("is Memory OS healthy?", "doctor"),
-    ] {
-        let report = core::resolver::resolve_with_source_status(query, Some("live"));
-        if report.route != expected_route {
-            anyhow::bail!(
-                "resolver trigger `{query}` routed to `{}` instead of `{expected_route}`",
-                report.route
-            );
-        }
-        checked += 1;
-    }
+    checked += validate_resolver_trigger_fixtures()?;
     for invalid in [
         "munin nudge --format xml",
         "munin recall --format prompt resolver",
@@ -961,7 +959,7 @@ fn run_check_resolvable() -> Result<()> {
         }
         checked += 1;
     }
-    println!("install check-resolvable: {checked} Munin commands parsed successfully");
+    println!("install check-resolvable: {checked} resolver, skill, and fixture checks passed");
     Ok(())
 }
 
@@ -1014,6 +1012,98 @@ fn validate_munin_command(command: &str) -> Result<()> {
     argv.extend(args);
     Cli::try_parse_from(argv).with_context(|| format!("failed to parse `{command}`"))?;
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolverTriggerFixture {
+    route: String,
+    source_status: Option<String>,
+    triggers: Vec<String>,
+    negative_triggers: Vec<String>,
+}
+
+fn validate_resolver_trigger_fixtures() -> Result<usize> {
+    let fixture_dir = Path::new("tests")
+        .join("fixtures")
+        .join("resolver_triggers");
+    if !fixture_dir.exists() {
+        anyhow::bail!(
+            "resolver trigger fixture directory missing: {}",
+            fixture_dir.display()
+        );
+    }
+
+    let mut checked = 0usize;
+    let mut fixture_routes = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&fixture_dir)
+        .with_context(|| format!("failed to read {}", fixture_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read fixture {}", path.display()))?;
+        let fixture: ResolverTriggerFixture = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse fixture {}", path.display()))?;
+        let rule = core::access_layer::intent_rules::INTENT_RULES
+            .iter()
+            .find(|rule| rule.route == fixture.route)
+            .with_context(|| format!("fixture {} does not match an intent rule", path.display()))?;
+        fixture_routes.insert(fixture.route.clone());
+        if fixture.triggers.len() < 5 || fixture.negative_triggers.len() < 2 {
+            anyhow::bail!(
+                "fixture {} needs at least five positive and two negative triggers",
+                path.display()
+            );
+        }
+        for query in fixture.triggers {
+            let report = core::resolver::resolve_with_source_status(
+                query.as_str(),
+                fixture.source_status.as_deref(),
+            );
+            if report.route != fixture.route {
+                anyhow::bail!(
+                    "fixture {} trigger `{}` routed to `{}` instead of `{}`",
+                    path.display(),
+                    query,
+                    report.route,
+                    fixture.route
+                );
+            }
+            if report.command.starts_with("munin ") {
+                validate_munin_command(&report.command).with_context(|| {
+                    format!("fixture {} command is not resolvable", path.display())
+                })?;
+            }
+            checked += 1;
+        }
+        for query in fixture.negative_triggers {
+            let report = core::resolver::resolve_with_source_status(
+                query.as_str(),
+                fixture.source_status.as_deref(),
+            );
+            if report.route == fixture.route {
+                anyhow::bail!(
+                    "fixture {} negative trigger `{}` unexpectedly routed to `{}`",
+                    path.display(),
+                    query,
+                    fixture.route
+                );
+            }
+            checked += 1;
+        }
+        checked += rule.trigger_phrases.len().min(1);
+    }
+    for rule in core::access_layer::intent_rules::INTENT_RULES {
+        if !fixture_routes.contains(rule.route) {
+            anyhow::bail!("resolver trigger fixture missing route `{}`", rule.route);
+        }
+    }
+    if checked < 50 {
+        anyhow::bail!("resolver trigger coverage too low: {checked} assertions");
+    }
+    Ok(checked)
 }
 
 fn command_line_words(command: &str) -> Vec<String> {
@@ -1219,7 +1309,7 @@ fn render_bullets(items: &[&str]) -> String {
 
 const CODEX_PLUGIN_JSON: &str = r#"{
   "name": "munin-memory",
-  "version": "0.44.0",
+  "version": "0.5.0-beta.1",
   "description": "Munin local memory surfaces for Codex.",
   "interface": {
     "displayName": "Munin Memory",
@@ -1310,5 +1400,13 @@ mod tests {
         parse_ok(&["munin", "memory-os", "doctor"]);
         parse_ok(&["munin", "memory-os", "friction"]);
         parse_ok(&["munin", "memory-os", "promotion"]);
+    }
+
+    #[test]
+    fn release_doctor_rejects_stale_session_brain_statuses() {
+        assert!(!session_brain_source_is_release_safe("stale"));
+        assert!(!session_brain_source_is_release_safe("stale-fallback"));
+        assert!(session_brain_source_is_release_safe("fallback-latest"));
+        assert!(session_brain_source_is_release_safe("live"));
     }
 }

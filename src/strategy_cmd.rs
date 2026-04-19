@@ -94,6 +94,17 @@ fn render_recommend_text(report: &strategy::StrategyRecommendReport) -> String {
     ];
     if report.nudges.is_empty() {
         lines.push("No strategic nudge is ready from the current evidence.".to_string());
+    } else if metrics_snapshot_lacks_current_values(report) {
+        lines.push(format!("1. Fill {} KPI metrics.", report.scope_id));
+        lines.push(
+            "   why now: Strategy has KPI targets, but current metric values are missing."
+                .to_string(),
+        );
+        lines.push(format!(
+            "   do next: munin metrics set <metric_key> <value> --scope {}",
+            report.scope_id
+        ));
+        lines.push("   confidence: medium".to_string());
     } else {
         for (index, nudge) in report.nudges.iter().take(3).enumerate() {
             lines.push(format!("{}. {}", index + 1, nudge.task));
@@ -111,6 +122,13 @@ fn render_recommend_text(report: &strategy::StrategyRecommendReport) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn metrics_snapshot_lacks_current_values(report: &strategy::StrategyRecommendReport) -> bool {
+    report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("no current values"))
 }
 
 fn render_prompt<T: Serialize>(report: &T) -> Result<String> {

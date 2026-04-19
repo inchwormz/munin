@@ -26,5 +26,5 @@ fn resolve_routes_friction_question() {
 #[test]
 fn generated_skills_and_resolver_targets_are_parseable() {
     let output = munin(&["install", "--check-resolvable"]);
-    assert!(output.contains("parsed successfully"));
+    assert!(output.contains("resolver, skill, and fixture checks passed"));
 }

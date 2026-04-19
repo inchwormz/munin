@@ -6,8 +6,6 @@ const BANNED: &[&str] = &[
     "munin cargo test",
     "munin git diff",
     "munin replay-eval",
-    "cargo install munin-memory",
-    "crates.io",
 ];
 
 #[test]

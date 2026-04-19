@@ -2,6 +2,8 @@
 
 Use this repo as the Munin CLI source of truth.
 
+Current testing build: `v0.5.0-beta.1`.
+
 ## Build
 
 ```powershell
@@ -21,6 +23,7 @@ cargo install --path . --force
 munin --version
 munin resolve "what keeps going wrong?"
 munin hygiene --format text
+munin install --check-resolvable
 ```
 
 `context` remains the shell wrapper. This repo owns the `munin` memory CLI and

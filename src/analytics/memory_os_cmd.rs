@@ -1517,7 +1517,7 @@ fn build_doctor_report(
         }
         .to_string(),
         summary: if strategy_metrics_empty {
-            "Metrics slots are present but empty, so KPIs cannot turn green/yellow yet."
+            "Ingested KPI slots are present but current values are missing, so KPIs cannot turn green/yellow yet."
                 .to_string()
         } else if strategy_metrics.is_ok() {
             "Metrics snapshot has at least one instrumented KPI, dependency, instrumentation flag, or initiative signal."
@@ -1679,7 +1679,7 @@ fn build_doctor_pipeline_problems(
             }),
             "Strategy metrics are instrumented" => problems.push(MemoryOsDoctorProblem {
                 severity: if check.status == "fail" { "high" } else { "medium" }.to_string(),
-                title: "Strategy metrics are metric-empty".to_string(),
+                title: "Strategy metrics need current values".to_string(),
                 summary: check.summary.clone(),
                 permanent_fix:
                     "Pick an instrumentation source for each KPI, then write current metric values into metrics.json so strategy status can mark KPIs green/yellow/red."
@@ -1815,17 +1815,29 @@ fn doctor_load_strategy_metrics(
     report: &strategy::StrategyInspectReport,
 ) -> Result<strategy::StrategyMetricsSnapshot> {
     let path = &report.registry.metrics_path;
-    if !path.exists() {
-        return Ok(strategy::StrategyMetricsSnapshot::default());
+    let mut metrics = if path.exists() {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read strategy metrics {}", path.display()))?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse strategy metrics {}", path.display()))?
+    } else {
+        strategy::StrategyMetricsSnapshot::default()
+    };
+    for kpi in &report.kernel.kpis {
+        metrics
+            .kpis
+            .entry(kpi.metric_key.clone())
+            .or_insert_with(|| strategy::StrategyMetricRecord {
+                current: None,
+                unit: kpi.unit.clone(),
+                updated_at: None,
+            });
     }
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read strategy metrics {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse strategy metrics {}", path.display()))
+    Ok(metrics)
 }
 
 fn doctor_strategy_metrics_empty(metrics: &strategy::StrategyMetricsSnapshot) -> bool {
-    metrics.kpis.is_empty()
+    metrics.kpis.values().all(|record| record.current.is_none())
         && metrics.instrumentation.is_empty()
         && metrics.dependency_states.is_empty()
         && metrics.initiatives.is_empty()

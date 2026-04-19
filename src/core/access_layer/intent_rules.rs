@@ -104,7 +104,7 @@ pub const INTENT_RULES: &[IntentRule] = &[
         trust_rules: &[
             "Check `sourceStatus` first.",
             "Treat the answer as current only when `sourceStatus` is `live`.",
-            "For `fallback-latest` or `stale-fallback`, name the session id and transcript modified time.",
+            "For `fallback-latest` or `stale`, name the session id and transcript modified time.",
         ],
         fallback_rules: &[
             "If Session Brain is fallback or stale, prefer `munin resume --format prompt` for project continuity.",

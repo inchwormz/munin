@@ -668,7 +668,8 @@ pub fn discover_inspect_reports(limit: usize) -> Result<Vec<StrategyInspectRepor
 
 pub fn status(options: &StrategyReadOptions) -> Result<StrategyStatusReport> {
     let (paths, registry, kernel) = load_scope_bundle(options.scope.as_str())?;
-    let metrics = load_metrics_snapshot(&paths.metrics_path)?;
+    let mut metrics = load_metrics_snapshot(&paths.metrics_path)?;
+    hydrate_metric_slots_from_kernel(&mut metrics, &kernel);
     let continuity = load_continuity_snapshot(registry.continuity_project_path.as_deref())?;
     let mut items = Vec::new();
     let mut warnings = Vec::new();
@@ -683,9 +684,9 @@ pub fn status(options: &StrategyReadOptions) -> Result<StrategyStatusReport> {
     if items.is_empty() {
         warnings.push("Strategy kernel has no KPI or initiative items to score.".to_string());
     }
-    if strategy_metrics_are_empty(&metrics) {
+    if strategy_metrics_have_no_current_values(&metrics) {
         warnings.push(
-            "Metrics snapshot has empty kpis, instrumentation, dependency_states, and initiatives; strategy status can list KPIs but cannot mark them green/yellow yet."
+            "Metrics snapshot has ingested KPI slots but no current values; strategy status can list KPIs but cannot mark them green/yellow yet."
                 .to_string(),
         );
     }
@@ -717,8 +718,8 @@ fn strategy_kernel_is_empty(kernel: &StrategyKernel) -> bool {
     strategy_kernel_signal_count(kernel) == 0
 }
 
-fn strategy_metrics_are_empty(metrics: &StrategyMetricsSnapshot) -> bool {
-    metrics.kpis.is_empty()
+fn strategy_metrics_have_no_current_values(metrics: &StrategyMetricsSnapshot) -> bool {
+    metrics.kpis.values().all(|record| record.current.is_none())
         && metrics.instrumentation.is_empty()
         && metrics.dependency_states.is_empty()
         && metrics.initiatives.is_empty()
@@ -830,6 +831,7 @@ pub fn metrics_set(options: StrategyMetricSetOptions) -> Result<StrategyMetricsR
 pub fn metrics_get(options: StrategyMetricGetOptions) -> Result<StrategyMetricsReport> {
     let (paths, _, kernel) = load_scope_bundle(options.scope.as_str())?;
     let mut snapshot = load_metrics_snapshot(&paths.metrics_path)?;
+    hydrate_metric_slots_from_kernel(&mut snapshot, &kernel);
     let mut warnings = Vec::new();
     if let Some(key) = options.metric_key.as_deref() {
         let Some((canonical_key, _)) = resolve_metric_key(&kernel, key) else {
@@ -843,9 +845,22 @@ pub fn metrics_get(options: StrategyMetricGetOptions) -> Result<StrategyMetricsR
             .retain(|existing_key, _| existing_key == &canonical_key);
         if snapshot.kpis.is_empty() {
             warnings.push(format!(
-                "No current metric value recorded for `{canonical_key}`."
+                "No ingested KPI definition or current metric value was found for `{canonical_key}`."
+            ));
+        } else if snapshot
+            .kpis
+            .get(&canonical_key)
+            .is_some_and(|record| record.current.is_none())
+        {
+            warnings.push(format!(
+                "Ingested KPI `{canonical_key}` exists, but no current metric value is recorded."
             ));
         }
+    } else if strategy_metrics_have_no_current_values(&snapshot) && !snapshot.kpis.is_empty() {
+        warnings.push(
+            "Loaded ingested strategy KPI definitions, but no current metric values are recorded."
+                .to_string(),
+        );
     }
     metrics_report_from_snapshot(&paths, &kernel.scope_id, snapshot, Some(warnings))
 }
@@ -1029,6 +1044,22 @@ fn load_metrics_snapshot(path: &Path) -> Result<StrategyMetricsSnapshot> {
         .with_context(|| format!("Failed to read metrics snapshot {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse metrics snapshot {}", path.display()))
+}
+
+fn hydrate_metric_slots_from_kernel(
+    snapshot: &mut StrategyMetricsSnapshot,
+    kernel: &StrategyKernel,
+) {
+    for kpi in &kernel.kpis {
+        snapshot
+            .kpis
+            .entry(kpi.metric_key.clone())
+            .or_insert_with(|| StrategyMetricRecord {
+                current: None,
+                unit: kpi.unit.clone(),
+                updated_at: None,
+            });
+    }
 }
 
 fn save_metrics_snapshot(path: &Path, snapshot: &StrategyMetricsSnapshot) -> Result<()> {
@@ -2354,7 +2385,71 @@ mod tests {
         assert!(status_report
             .warnings
             .iter()
-            .any(|warning| warning.contains("Metrics snapshot has empty")));
+            .any(|warning| warning.contains("no current values")));
+
+        std::env::remove_var("CONTEXT_CONFIG_DIR");
+        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
+    }
+
+    #[test]
+    fn test_metrics_get_hydrates_ingested_kpi_slots() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempdir().expect("tempdir");
+        let config_dir = temp.path().join("config");
+        let data_dir = temp.path().join("data");
+        std::env::set_var("CONTEXT_CONFIG_DIR", &config_dir);
+        std::env::set_var("CONTEXT_DATA_DIR_PATH", &data_dir);
+
+        let mut config = crate::core::config::Config::default();
+        config.strategy.default_scope = Some("sitesorted-business".to_string());
+        config.save().expect("config");
+
+        let storage_dir = data_dir.join(STRATEGY_DIR).join("sitesorted-business");
+        let artifact_path = storage_dir.join(STRATEGY_TEMPLATE_JSON_FILE);
+        let metrics_path = storage_dir.join(STRATEGY_DEFAULT_METRICS_FILE);
+        fs::create_dir_all(&storage_dir).expect("storage dir");
+        fs::write(&artifact_path, sample_strategy_json()).expect("artifact");
+        let scope_config = StrategyScopeConfig {
+            enabled: true,
+            label: Some("sitesorted-business".to_string()),
+            artifact_path: Some(artifact_path.clone()),
+            metrics_path: Some(metrics_path.clone()),
+            continuity_project_path: None,
+            storage_dir: Some(storage_dir.clone()),
+            signal_paths: Vec::new(),
+        };
+        let store_paths = StrategyStorePaths {
+            storage_dir: storage_dir.clone(),
+            registry_path: storage_dir.join(STRATEGY_REGISTRY_FILE),
+            kernel_path: storage_dir.join(STRATEGY_KERNEL_FILE),
+            metrics_path: metrics_path.clone(),
+        };
+        let registry = build_source_registry(
+            "sitesorted-business",
+            &artifact_path,
+            &scope_config,
+            &store_paths,
+            false,
+            false,
+        )
+        .expect("registry");
+        let kernel = import_strategy_kernel("sitesorted-business", &artifact_path).expect("kernel");
+        save_registry(&store_paths.registry_path, &registry).expect("save registry");
+        save_kernel(&store_paths.kernel_path, &kernel).expect("save kernel");
+        ensure_metrics_file(&metrics_path, "sitesorted-business").expect("metrics");
+
+        let report = metrics_get(StrategyMetricGetOptions {
+            scope: "sitesorted-business".to_string(),
+            metric_key: None,
+        })
+        .expect("metrics get");
+
+        assert!(report.kpis.contains_key("outreach_volume"));
+        assert!(report.kpis.values().all(|record| record.current.is_none()));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ingested strategy KPI definitions")));
 
         std::env::remove_var("CONTEXT_CONFIG_DIR");
         std::env::remove_var("CONTEXT_DATA_DIR_PATH");

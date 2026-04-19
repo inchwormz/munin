@@ -204,7 +204,7 @@ fn transcript_modified_at(path: &Path) -> Option<String> {
 fn fallback_source_status(modified_at: SystemTime) -> String {
     let modified = DateTime::<Utc>::from(modified_at);
     if Utc::now().signed_duration_since(modified) > Duration::hours(24) {
-        "stale-fallback".to_string()
+        "stale".to_string()
     } else {
         "fallback-latest".to_string()
     }

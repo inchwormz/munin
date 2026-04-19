@@ -141,7 +141,8 @@ fn resolved_project_path(project_path: Option<&str>) -> String {
         return trimmed.to_string();
     }
     let canonical = path.canonicalize().unwrap_or(path);
-    crate::core::utils::normalize_windows_path_string(canonical.to_string_lossy().as_ref())
+    let root = crate::core::utils::detect_project_root(&canonical);
+    crate::core::utils::normalize_windows_path_string(root.to_string_lossy().as_ref())
 }
 
 fn push_unique_string(values: &mut Vec<String>, value: String) {
@@ -1886,25 +1887,20 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let original = std::env::current_dir().expect("cwd");
         let tmp = TempDir::new().expect("temp dir");
+        std::fs::create_dir_all(tmp.path().join(".git")).expect("git marker");
         std::fs::create_dir_all(tmp.path().join("child")).expect("child dir");
         std::env::set_current_dir(tmp.path().join("child")).expect("set cwd");
-        let expected_child = crate::core::utils::normalize_windows_path_string(
-            std::env::current_dir()
-                .expect("child cwd")
-                .to_string_lossy()
-                .as_ref(),
+        let expected_root = crate::core::utils::normalize_windows_path_string(
+            tmp.path().to_string_lossy().as_ref(),
         );
         let dot = resolved_project_path(Some("."));
         let parent = resolved_project_path(Some(".."));
+        let implicit = resolved_project_path(None);
         std::env::set_current_dir(original).expect("restore cwd");
 
-        assert_eq!(dot, expected_child);
-        assert_eq!(
-            parent,
-            crate::core::utils::normalize_windows_path_string(
-                tmp.path().to_string_lossy().as_ref()
-            )
-        );
+        assert_eq!(dot, expected_root);
+        assert_eq!(parent, expected_root);
+        assert_eq!(implicit, expected_root);
     }
 
     fn insert_command_row(tracker: &Tracker, timestamp: DateTime<Utc>, original_cmd: &str) {
