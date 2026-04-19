@@ -1183,6 +1183,9 @@ fn collect_memory_tasks(
         .into_iter()
         .take(3)
     {
+        if !usable_memory_task_summary(&finding.summary) {
+            continue;
+        }
         tasks.push(NudgeTask {
             task: format!("Resume incomplete work: {}", compact_task_text(&finding.summary)),
             source: "verified-incomplete-task".to_string(),
@@ -1195,6 +1198,9 @@ fn collect_memory_tasks(
 
     let overview = tracker.get_memory_os_overview_report(scope, project_path)?;
     for finding in overview.active_work.into_iter().take(3) {
+        if !usable_memory_task_summary(&finding.summary) {
+            continue;
+        }
         tasks.push(NudgeTask {
             task: format!(
                 "Continue {}: {}",
@@ -1222,6 +1228,22 @@ fn collect_memory_tasks(
         });
     }
     Ok(tasks)
+}
+
+fn usable_memory_task_summary(summary: &str) -> bool {
+    let lowered = summary.to_ascii_lowercase();
+    let trimmed = summary.trim();
+    if trimmed.len() < 24 {
+        return false;
+    }
+    if lowered.starts_with("no this")
+        || lowered.starts_with("no, this")
+        || lowered.starts_with("nah")
+        || lowered.starts_with("wait")
+    {
+        return false;
+    }
+    true
 }
 
 fn dedupe_nudge_tasks(tasks: Vec<NudgeTask>, limit: usize) -> Vec<NudgeTask> {
