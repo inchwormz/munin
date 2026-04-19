@@ -10,29 +10,35 @@ tasks without sending that memory to a hosted service.
 
 Current testing build: `v0.5.1`.
 
-[![CI](https://github.com/inchwormz/munin/actions/workflows/ci.yml/badge.svg)](https://github.com/inchwormz/munin/actions/workflows/ci.yml)
+[![CI](https://github.com/inchwormz/munin-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/inchwormz/munin-memory/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/munin-memory.svg)](https://crates.io/crates/munin-memory)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/inchwormz/munin?style=social)](https://github.com/inchwormz/munin)
+[![GitHub stars](https://img.shields.io/github/stars/inchwormz/munin-memory?style=social)](https://github.com/inchwormz/munin-memory)
 
 Munin is open source under the Apache 2.0 license.
 
 ## What Munin Does
 
-Munin has four local layers:
+Munin has five local layers:
 
 1. **Session ingestion** reads first-class Claude and Codex sessions: prompts,
 assistant turns, shell commands, outcomes, corrections, working directories, and
 timestamps. Claude subagent internals are excluded by design.
 2. **Memory compilation** converts those sessions into a local Memory OS:
-evidence-backed facts, active projects, continuity commitments, open loops,
-repeated friction, command outcomes, strategy context, and next steps.
+evidence-backed facts, active projects, strategic plans, continuity commitments,
+open loops, repeated friction, command outcomes, strategy context, and next steps.
 3. **Strategy and proactivity** turn memory into concrete tasks. `munin nudge`
 now combines strategy red/yellow items with continuity work from previous
-completed sessions, active projects, and verified incomplete tasks.
+completed sessions, active projects, and verified incomplete tasks. The morning
+proactivity runner can evaluate that state on a schedule and start the next work
+session when the configured threshold is met.
 4. **Agent access** installs Claude skills, Claude slash commands, Codex skills,
 and a Codex plugin skill bundle so agents can query compiled memory instead of
 trawling raw transcripts.
+5. **Session Brain** compiles the current live session into a short working
+memory layer: who the user is, what they care about, the current ask, active
+strategy, blockers, and next actions. It is for long context windows where the
+agent needs current-session oversight, not historical search.
 
 No hosted service is required. The compiled state stays on the machine running
 Munin.
@@ -67,8 +73,8 @@ install check-resolvable: ... resolver, skill, and fixture checks passed
 ### Option B: Install From GitHub Source
 
 ```powershell
-git clone https://github.com/inchwormz/munin.git
-cd munin
+git clone https://github.com/inchwormz/munin-memory.git
+cd munin-memory
 cargo install --path . --force
 ```
 
