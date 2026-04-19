@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.2 - 2026-04-20
+
+### Added
+
+- `munin-proactive` skill and `/munin-proactive` (Claude) / `$munin-proactive` (Codex) slash command. Runs `munin proactivity run --no-spawn --format text` on demand so agents can invoke the morning strategic proactivity cycle at any time without waiting for the scheduled 8am task.
+
+### Fixed
+
+- `munin friction --format text` now renders up to 10 active friction fixes numbered `1.`–`10.` with full body, and lists any additional non-fixed items in an `Additional Active Friction (N more, awareness only)` block. The text surface previously capped at the first item even when 10+ active fixes existed in the JSON output.
+- Dropped the silent `fixes.truncate(10)` in the friction fix builder so downstream consumers (including JSON) can see the full sorted list.
+
 ## 0.5.1 - 2026-04-20
 
 ### Changed
@@ -13,10 +24,7 @@
 
 ### Changed
 
-- New proactivity installs default to `auto_spawn = true`.
-- `munin proactivity schedule-install` now writes `auto_spawn = true` into config when it installs the daemon.
-- Proactivity scheduler support is platform-aware: Windows Task Scheduler, macOS LaunchAgent, and Linux systemd user timer.
-- GitHub CI now runs Rust checks on Windows, macOS, and Linux.
+- Pre-release of 0.5.1. Same changes as 0.5.1 — platform-aware proactivity scheduler, auto_spawn default, GitHub CI matrix.
 
 ## 0.5.0-beta.2 - 2026-04-19
 

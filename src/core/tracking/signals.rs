@@ -218,7 +218,6 @@ pub(super) fn build_memory_os_friction_fixes(
             .then(right.score.cmp(&left.score))
             .then(left.title.cmp(&right.title))
     });
-    fixes.truncate(10);
     fixes
 }
 

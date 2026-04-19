@@ -1229,6 +1229,14 @@ const INSTALL_QUICK_SKILLS: &[InstallQuickSkill] = &[
         how_to_read_output: "The output shows elapsed time plus sessions, shell executions, and corrections imported. The recording command uses `--force` so repeated takes still show timing and corpus counts.",
         done: "The run reports ingestion timing and either imported session counts or a clear already-current result.",
     },
+    InstallQuickSkill {
+        name: "munin-proactive",
+        description: "Run Munin's morning strategic proactivity evaluation on demand.",
+        when_to_use: "Use when the user asks to invoke proactivity manually, kick off a morning proactivity cycle now, or see the latest strategic next-move recommendations without waiting for the scheduled 8am task.",
+        primary_command: "munin proactivity run --no-spawn --format text",
+        how_to_read_output: "The output is the recommendation report: strategic nudges with confidence, continuity tasks, any queued job id, and warnings. Because `--no-spawn` is set, no follow-up session is launched; the user can approve the queued brief later with `munin proactivity approve <job-id>`.",
+        done: "The run reports one or more nudges (or a clean no-action state), names any queued job id, and confirms no session was spawned.",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -2033,7 +2041,7 @@ mod tests {
             assert_install_quick_skill_contract(skill.name, &rendered, skill)
                 .unwrap_or_else(|err| panic!("{} contract failed: {err}", skill.name));
         }
-        assert_eq!(names.len(), 6);
+        assert_eq!(names.len(), 7);
     }
 
     #[test]
