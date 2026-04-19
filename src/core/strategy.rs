@@ -121,6 +121,7 @@ pub struct StrategyConstraint {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StrategyAssumption {
     pub assumption_id: String,
+    #[serde(default)]
     pub statement: String,
     pub source_refs: Vec<StrategySourceRef>,
 }
@@ -282,6 +283,7 @@ struct StrategyImportJsonConstraint {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct StrategyImportJsonAssumption {
     id: String,
+    #[serde(default)]
     statement: String,
     #[serde(default)]
     source_section: Option<String>,
@@ -371,11 +373,21 @@ pub struct StrategicNudge {
     pub expected_effect: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NudgeTask {
+    pub task: String,
+    pub source: String,
+    pub why_now: String,
+    pub evidence: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyRecommendReport {
     pub generated_at: String,
     pub scope_id: String,
     pub continuity: StrategyContinuitySnapshot,
+    pub nudge_tasks: Vec<String>,
+    pub continuity_tasks: Vec<NudgeTask>,
     pub nudges: Vec<StrategicNudge>,
     pub suppressed_nudges: Vec<StrategicNudge>,
     pub warnings: Vec<String>,
@@ -481,11 +493,10 @@ pub fn setup(options: &StrategySetupOptions) -> Result<StrategySetupReport> {
         }
         if options.bootstrap_claude {
             next_step_hint = Some(format!(
-                "Bootstrap requested. Use the strategic-planning skill to generate both `{}` and `{}`, then re-run `context strategy setup --scope {} --import {}` with the JSON sidecar.",
-                markdown_path.display(),
+                "First-cut strategy kernel staged at `{}` (markdown companion at `{}`). It uses inferred founder defaults — refine in chat via the `/munin-strategy` skill, then re-run `munin strategy setup --scope {} --import {}` to commit changes.",
                 json_path.display(),
-                scope_id
-                ,
+                markdown_path.display(),
+                scope_id,
                 json_path.display()
             ));
         } else {
@@ -591,6 +602,15 @@ pub fn inspect(options: &StrategyReadOptions) -> Result<StrategyInspectReport> {
         registry,
         kernel,
     })
+}
+
+pub fn default_strategy_scope_hint() -> String {
+    if let Ok(config) = Config::load() {
+        if let Some(name) = config.strategy.configured_scope_name(None) {
+            return name;
+        }
+    }
+    crate::core::config::DEFAULT_STRATEGY_SCOPE.to_string()
 }
 
 pub fn discover_inspect_reports(limit: usize) -> Result<Vec<StrategyInspectReport>> {
@@ -791,10 +811,19 @@ pub fn recommend(options: &StrategyReadOptions) -> Result<StrategyRecommendRepor
         );
     }
 
+    let continuity_tasks = continuity_nudge_tasks(registry.continuity_project_path.as_deref())?;
+    let nudge_tasks = nudges
+        .iter()
+        .map(|nudge| nudge.task.clone())
+        .chain(continuity_tasks.iter().map(|task| task.task.clone()))
+        .collect();
+
     Ok(StrategyRecommendReport {
         generated_at: Utc::now().to_rfc3339(),
         scope_id: options.scope.clone(),
         continuity: status_report.continuity,
+        nudge_tasks,
+        continuity_tasks,
         nudges,
         suppressed_nudges,
         warnings,
@@ -1127,6 +1156,90 @@ fn load_continuity_snapshot(project_path: Option<&Path>) -> Result<StrategyConti
         active: !findings.is_empty(),
         summary: findings.first().map(|finding| finding.summary.clone()),
     })
+}
+
+fn continuity_nudge_tasks(project_path: Option<&Path>) -> Result<Vec<NudgeTask>> {
+    let tracker = Tracker::new().context("Failed to initialize tracking database")?;
+    let project_string = project_path.map(|path| path.display().to_string());
+    let mut tasks = collect_memory_tasks(
+        &tracker,
+        MemoryOsInspectionScope::Project,
+        project_string.as_deref(),
+    )?;
+    if tasks.is_empty() {
+        tasks = collect_memory_tasks(&tracker, MemoryOsInspectionScope::User, None)?;
+    }
+    Ok(dedupe_nudge_tasks(tasks, 5))
+}
+
+fn collect_memory_tasks(
+    tracker: &Tracker,
+    scope: MemoryOsInspectionScope,
+    project_path: Option<&str>,
+) -> Result<Vec<NudgeTask>> {
+    let mut tasks = Vec::new();
+    for finding in tracker
+        .get_memory_os_continuity_findings(scope, project_path)?
+        .into_iter()
+        .take(3)
+    {
+        tasks.push(NudgeTask {
+            task: format!("Resume incomplete work: {}", compact_task_text(&finding.summary)),
+            source: "verified-incomplete-task".to_string(),
+            why_now:
+                "Memory OS has an explicit continuity commitment or open obligation from earlier work."
+                    .to_string(),
+            evidence: finding.evidence.into_iter().take(2).collect(),
+        });
+    }
+
+    let overview = tracker.get_memory_os_overview_report(scope, project_path)?;
+    for finding in overview.active_work.into_iter().take(3) {
+        tasks.push(NudgeTask {
+            task: format!(
+                "Continue {}: {}",
+                finding.title,
+                compact_task_text(&finding.summary)
+            ),
+            source: "active-project-memory".to_string(),
+            why_now:
+                "Recent completed sessions still point to this as the next active project area."
+                    .to_string(),
+            evidence: finding.evidence.into_iter().take(2).collect(),
+        });
+    }
+    for project in overview.top_projects.into_iter().take(2) {
+        tasks.push(NudgeTask {
+            task: format!("Review next step for {}", project.repo_label),
+            source: "recent-project-history".to_string(),
+            why_now:
+                "This project has a high concentration of recent agent sessions and completed work."
+                    .to_string(),
+            evidence: vec![format!(
+                "{} sessions, {} shell executions",
+                project.sessions, project.shell_executions
+            )],
+        });
+    }
+    Ok(tasks)
+}
+
+fn dedupe_nudge_tasks(tasks: Vec<NudgeTask>, limit: usize) -> Vec<NudgeTask> {
+    let mut seen = std::collections::BTreeSet::new();
+    tasks
+        .into_iter()
+        .filter(|task| seen.insert(task.task.to_ascii_lowercase()))
+        .take(limit)
+        .collect()
+}
+
+fn compact_task_text(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= 160 {
+        compact
+    } else {
+        format!("{}...", compact.chars().take(157).collect::<String>())
+    }
 }
 
 fn parse_strategy_markdown(
@@ -1988,9 +2101,23 @@ fn strategy_template(scope_id: &str) -> String {
 }
 
 fn strategy_json_template(scope_id: &str) -> String {
+    let now = Utc::now();
+    let date = now.format("%Y-%m-%d");
+    let year = now.format("%Y");
+    let quarter = ((now.format("%-m").to_string().parse::<u32>().unwrap_or(1) - 1) / 3) + 1;
+    let org_name = derive_org_name_from_scope(scope_id);
     format!(
-        "{{\n  \"schema_version\": \"strategic-plan-context-v1\",\n  \"organization\": {{\n    \"name\": \"<organization-name>\",\n    \"scope_id\": \"{scope_id}\",\n    \"date\": \"<YYYY-MM-DD>\",\n    \"plan_period\": \"<plan-period>\",\n    \"active_quarter\": \"<Q# YYYY>\"\n  }},\n  \"goals\": [],\n  \"kpis\": [],\n  \"initiatives\": [],\n  \"constraints\": [],\n  \"assumptions\": [],\n  \"risks\": []\n}}\n"
+        "{{\n  \"schema_version\": \"strategic-plan-context-v1\",\n  \"organization\": {{\n    \"name\": \"{org_name}\",\n    \"scope_id\": \"{scope_id}\",\n    \"date\": \"{date}\",\n    \"plan_period\": \"FY{year}\",\n    \"active_quarter\": \"Q{quarter} {year}\"\n  }},\n  \"goals\": [\n    {{\n      \"id\": \"goal-annual-first-ten\",\n      \"title\": \"Reach 10 paying customers\",\n      \"horizon\": \"annual\",\n      \"summary\": \"First-cut starter goal — refine with /munin-strategy.\",\n      \"due_date\": \"{year}-12-31\",\n      \"source_section\": \"Annual Goals\"\n    }}\n  ],\n  \"kpis\": [\n    {{\n      \"id\": \"kpi-outreach-reply-rate\",\n      \"title\": \"Outreach reply rate\",\n      \"metric_key\": \"outreach_reply_rate\",\n      \"cadence\": \"weekly\",\n      \"target\": 3,\n      \"green_threshold\": 3,\n      \"yellow_threshold\": 1,\n      \"lineage\": {{\n        \"goal_ids\": [\"goal-annual-first-ten\"],\n        \"initiative_ids\": [\"rock-close-first-customer\"]\n      }},\n      \"source_section\": \"KPIs\"\n    }},\n    {{\n      \"id\": \"kpi-paying-customers\",\n      \"title\": \"Paying customers\",\n      \"metric_key\": \"paying_customers\",\n      \"cadence\": \"monthly\",\n      \"target\": 10,\n      \"green_threshold\": 10,\n      \"yellow_threshold\": 5,\n      \"lineage\": {{\n        \"goal_ids\": [\"goal-annual-first-ten\"],\n        \"initiative_ids\": [\"rock-close-first-customer\"]\n      }},\n      \"source_section\": \"KPIs\"\n    }},\n    {{\n      \"id\": \"kpi-revenue\",\n      \"title\": \"Revenue (NZD)\",\n      \"metric_key\": \"revenue_nzd\",\n      \"cadence\": \"monthly\",\n      \"target\": 1500,\n      \"green_threshold\": 1500,\n      \"yellow_threshold\": 500,\n      \"lineage\": {{\n        \"goal_ids\": [\"goal-annual-first-ten\"],\n        \"initiative_ids\": [\"rock-close-first-customer\"]\n      }},\n      \"source_section\": \"KPIs\"\n    }}\n  ],\n  \"initiatives\": [\n    {{\n      \"id\": \"rock-close-first-customer\",\n      \"title\": \"Close first paying customer\",\n      \"kind\": \"rock\",\n      \"depends_on\": [],\n      \"supports_goal_ids\": [\"goal-annual-first-ten\"],\n      \"deferred\": false,\n      \"source_section\": \"Quarterly Rocks\"\n    }}\n  ],\n  \"constraints\": [],\n  \"assumptions\": [\n    {{\n      \"id\": \"assumption-cold-outreach\",\n      \"title\": \"Cold outreach is the primary acquisition channel for {scope_id}\",\n      \"summary\": \"First-cut starter assumption — refine with /munin-strategy.\",\n      \"source_section\": \"Assumptions\"\n    }}\n  ],\n  \"risks\": []\n}}\n"
     )
+}
+
+fn derive_org_name_from_scope(scope_id: &str) -> String {
+    let primary = scope_id.split('-').next().unwrap_or(scope_id);
+    let mut chars = primary.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "Organization".to_string(),
+    }
 }
 
 #[cfg(test)]
