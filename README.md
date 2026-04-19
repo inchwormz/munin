@@ -2,7 +2,7 @@
 
 Local memory system for agent-driven development.
 
-Current testing build: `v0.5.1-beta-2`.
+Current testing build: `v0.5.1-beta-3`.
 
 ## What It Is
 

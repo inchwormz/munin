@@ -1022,40 +1022,54 @@ struct ResolverTriggerFixture {
     negative_triggers: Vec<String>,
 }
 
-fn validate_resolver_trigger_fixtures() -> Result<usize> {
-    let fixture_dir = Path::new("tests")
-        .join("fixtures")
-        .join("resolver_triggers");
-    if !fixture_dir.exists() {
-        anyhow::bail!(
-            "resolver trigger fixture directory missing: {}",
-            fixture_dir.display()
-        );
-    }
+const RESOLVER_TRIGGER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "brain.json",
+        include_str!("../../tests/fixtures/resolver_triggers/brain.json"),
+    ),
+    (
+        "doctor.json",
+        include_str!("../../tests/fixtures/resolver_triggers/doctor.json"),
+    ),
+    (
+        "friction.json",
+        include_str!("../../tests/fixtures/resolver_triggers/friction.json"),
+    ),
+    (
+        "hygiene.json",
+        include_str!("../../tests/fixtures/resolver_triggers/hygiene.json"),
+    ),
+    (
+        "nudge.json",
+        include_str!("../../tests/fixtures/resolver_triggers/nudge.json"),
+    ),
+    (
+        "prove.json",
+        include_str!("../../tests/fixtures/resolver_triggers/prove.json"),
+    ),
+    (
+        "recall.json",
+        include_str!("../../tests/fixtures/resolver_triggers/recall.json"),
+    ),
+    (
+        "resume.json",
+        include_str!("../../tests/fixtures/resolver_triggers/resume.json"),
+    ),
+];
 
+fn validate_resolver_trigger_fixtures() -> Result<usize> {
     let mut checked = 0usize;
     let mut fixture_routes = std::collections::BTreeSet::new();
-    for entry in fs::read_dir(&fixture_dir)
-        .with_context(|| format!("failed to read {}", fixture_dir.display()))?
-    {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read fixture {}", path.display()))?;
+    for (name, content) in RESOLVER_TRIGGER_FIXTURES {
         let fixture: ResolverTriggerFixture = serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse fixture {}", path.display()))?;
+            .with_context(|| format!("failed to parse fixture {name}"))?;
         let rule = core::access_layer::intent_rules::INTENT_RULES
             .iter()
             .find(|rule| rule.route == fixture.route)
-            .with_context(|| format!("fixture {} does not match an intent rule", path.display()))?;
+            .with_context(|| format!("fixture {name} does not match an intent rule"))?;
         fixture_routes.insert(fixture.route.clone());
         if fixture.triggers.len() < 5 || fixture.negative_triggers.len() < 2 {
-            anyhow::bail!(
-                "fixture {} needs at least five positive and two negative triggers",
-                path.display()
-            );
+            anyhow::bail!("fixture {name} needs at least five positive and two negative triggers");
         }
         for query in fixture.triggers {
             let report = core::resolver::resolve_with_source_status(
@@ -1065,16 +1079,15 @@ fn validate_resolver_trigger_fixtures() -> Result<usize> {
             if report.route != fixture.route {
                 anyhow::bail!(
                     "fixture {} trigger `{}` routed to `{}` instead of `{}`",
-                    path.display(),
+                    name,
                     query,
                     report.route,
                     fixture.route
                 );
             }
             if report.command.starts_with("munin ") {
-                validate_munin_command(&report.command).with_context(|| {
-                    format!("fixture {} command is not resolvable", path.display())
-                })?;
+                validate_munin_command(&report.command)
+                    .with_context(|| format!("fixture {name} command is not resolvable"))?;
             }
             checked += 1;
         }
@@ -1086,7 +1099,7 @@ fn validate_resolver_trigger_fixtures() -> Result<usize> {
             if report.route == fixture.route {
                 anyhow::bail!(
                     "fixture {} negative trigger `{}` unexpectedly routed to `{}`",
-                    path.display(),
+                    name,
                     query,
                     fixture.route
                 );
@@ -1307,16 +1320,20 @@ fn render_bullets(items: &[&str]) -> String {
         .join("\n")
 }
 
-const CODEX_PLUGIN_JSON: &str = r#"{
+const CODEX_PLUGIN_JSON: &str = concat!(
+    r#"{
   "name": "munin-memory",
-  "version": "0.5.0-beta.1",
+  "version": ""#,
+    env!("CARGO_PKG_VERSION"),
+    r#"",
   "description": "Munin local memory surfaces for Codex.",
   "interface": {
     "displayName": "Munin Memory",
     "shortDescription": "Local memory, friction, nudges, and proof for agentic coding."
   }
 }
-"#;
+"#
+);
 
 #[cfg(test)]
 mod tests {

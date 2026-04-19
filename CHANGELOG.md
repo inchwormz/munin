@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1-beta-3 - 2026-04-20
+
+### Fixed
+
+- `munin install --check-resolvable` now works from a crates.io install without requiring the source repository's test fixture directory.
+
 ## 0.5.1-beta-2 - 2026-04-20
 
 ### Changed
