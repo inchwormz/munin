@@ -1906,6 +1906,21 @@ fn load_onboarding_status() -> Result<LoadedOnboardingStatus> {
     let path = base
         .join("context")
         .join("memory_os_session_onboarding.json");
+    if !path.exists() {
+        return Ok(LoadedOnboardingStatus {
+            status: MemoryOsInspectOnboardingStatus {
+                schema_version: "missing".to_string(),
+                status: "missing".to_string(),
+                started_at: None,
+                completed_at: None,
+                sessions_processed: 0,
+                shells_ingested: 0,
+                corrections_ingested: 0,
+                imported_source_counts: Vec::new(),
+            },
+            imported_ids: HashMap::new(),
+        });
+    }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&content)
