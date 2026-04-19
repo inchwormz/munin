@@ -1,8 +1,8 @@
 //! Token savings tracking and analytics system.
 //!
-//! This module provides comprehensive tracking of Context command executions,
-//! recording token savings, execution times, and providing aggregation APIs
-//! for daily/weekly/monthly statistics.
+//! This module provides comprehensive tracking of local agent and wrapper
+//! executions, recording token savings, execution times, and providing
+//! aggregation APIs for daily/weekly/monthly statistics.
 //!
 //! # Architecture
 //!
@@ -4363,12 +4363,13 @@ mod tests {
         std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
         std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
 
+        let generated_at = Utc::now().to_rfc3339();
         for packet_id in ["pkt-201", "pkt-202"] {
             tracker
                 .record_memory_os_packet_checkpoint(
                     &crate::core::memory_os::MemoryOsCheckpointCapture {
                         packet_id: packet_id.into(),
-                        generated_at: "2026-04-12T00:00:00Z".into(),
+                        generated_at: generated_at.clone(),
                         preset: "resume".into(),
                         intent: "diagnose".into(),
                         profile: "codex-default".into(),

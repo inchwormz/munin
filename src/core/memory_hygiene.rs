@@ -18,6 +18,7 @@ pub struct MemoryHygieneReport {
     pub root: String,
     pub write_applied: bool,
     pub files_scanned: Vec<MemoryFileSummary>,
+    pub skipped_dirs: Vec<MemorySkippedDir>,
     pub duplicate_groups: Vec<MemoryDuplicateGroup>,
     pub planned_removals: Vec<MemoryPruneRemoval>,
     pub backups: Vec<String>,
@@ -29,6 +30,12 @@ pub struct MemoryFileSummary {
     pub path: String,
     pub store_kind: String,
     pub guidance_units: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemorySkippedDir {
+    pub path: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,7 +76,7 @@ pub fn run(options: &MemoryHygieneOptions) -> Result<MemoryHygieneReport> {
         .root
         .canonicalize()
         .unwrap_or_else(|_| options.root.clone());
-    let files = discover_memory_files(&root, options.include_codex)?;
+    let (files, skipped_dirs) = discover_memory_files(&root, options.include_codex)?;
     let mut units = Vec::new();
     let mut summaries = Vec::new();
     let mut warnings = Vec::new();
@@ -107,15 +114,17 @@ pub fn run(options: &MemoryHygieneOptions) -> Result<MemoryHygieneReport> {
                 .then(left.path.cmp(&right.path))
                 .then(left.line_number.cmp(&right.line_number))
         });
-        let auto_prunable = same_auto_prune_family(&occurrences);
-        let reason = if auto_prunable {
-            "exact duplicate inside the same memory family".to_string()
-        } else {
-            "cross-agent duplicate; report only because CLAUDE.md and AGENTS.md may both need the same rule"
-                .to_string()
-        };
-        if auto_prunable {
-            for occurrence in occurrences.iter().skip(1) {
+        let prune_plan = auto_prune_plan(&occurrences);
+        let auto_prunable = prune_plan.is_some();
+        let reason = prune_plan
+            .as_ref()
+            .map(|plan| plan.reason.clone())
+            .unwrap_or_else(|| {
+                "not auto-pruned; duplicate is not safely redundant in the active scope graph"
+                    .to_string()
+            });
+        if let Some(plan) = &prune_plan {
+            for occurrence in &plan.removals {
                 planned_removals.push(MemoryPruneRemoval {
                     path: display_path(&occurrence.path),
                     line_number: occurrence.line_number,
@@ -157,6 +166,7 @@ pub fn run(options: &MemoryHygieneOptions) -> Result<MemoryHygieneReport> {
         root: display_path(&root),
         write_applied: options.write,
         files_scanned: summaries,
+        skipped_dirs,
         duplicate_groups,
         planned_removals,
         backups,
@@ -164,12 +174,18 @@ pub fn run(options: &MemoryHygieneOptions) -> Result<MemoryHygieneReport> {
     })
 }
 
-fn discover_memory_files(root: &Path, include_codex: bool) -> Result<Vec<PathBuf>> {
+fn discover_memory_files(
+    root: &Path,
+    include_codex: bool,
+) -> Result<(Vec<PathBuf>, Vec<MemorySkippedDir>)> {
     let mut files = Vec::new();
-    discover_memory_files_inner(root, root, include_codex, &mut files)?;
+    let mut skipped_dirs = Vec::new();
+    discover_memory_files_inner(root, root, include_codex, &mut files, &mut skipped_dirs)?;
     files.sort();
     files.dedup();
-    Ok(files)
+    skipped_dirs.sort_by(|left, right| left.path.cmp(&right.path));
+    skipped_dirs.dedup();
+    Ok((files, skipped_dirs))
 }
 
 fn discover_memory_files_inner(
@@ -177,19 +193,18 @@ fn discover_memory_files_inner(
     dir: &Path,
     include_codex: bool,
     files: &mut Vec<PathBuf>,
+    skipped_dirs: &mut Vec<MemorySkippedDir>,
 ) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
-            if matches!(
-                name.as_str(),
-                ".git" | "target" | "node_modules" | ".worktrees"
-            ) {
-                continue;
-            }
-            if !include_codex && name == ".codex" {
+            if let Some(reason) = skip_dir_reason(&path, &name, include_codex) {
+                skipped_dirs.push(MemorySkippedDir {
+                    path: display_path(&path),
+                    reason: reason.to_string(),
+                });
                 continue;
             }
             if path
@@ -199,7 +214,7 @@ fn discover_memory_files_inner(
                 .unwrap_or(0)
                 <= 4
             {
-                discover_memory_files_inner(root, &path, include_codex, files)?;
+                discover_memory_files_inner(root, &path, include_codex, files, skipped_dirs)?;
             }
             continue;
         }
@@ -208,6 +223,50 @@ fn discover_memory_files_inner(
         }
     }
     Ok(())
+}
+
+fn skip_dir_reason(path: &Path, name: &str, include_codex: bool) -> Option<&'static str> {
+    let lowered = name.to_ascii_lowercase();
+    if matches!(lowered.as_str(), ".git" | "target" | "node_modules") {
+        return Some("build/dependency metadata");
+    }
+    if matches!(lowered.as_str(), ".worktrees" | ".omx" | ".omx2")
+        || lowered.ends_with(".omx-worktrees")
+        || is_inside_claude_worktrees(path)
+    {
+        return Some("worktree/runtime state is outside memory hygiene scope");
+    }
+    if !include_codex && lowered == ".codex" {
+        return Some(".codex excluded unless --include-codex is passed");
+    }
+    if include_codex && is_codex_runtime_dir(path, lowered.as_str()) {
+        return Some(".codex runtime/cache directory is outside memory hygiene scope");
+    }
+    None
+}
+
+fn is_inside_claude_worktrees(path: &Path) -> bool {
+    let mut previous_was_claude = false;
+    for component in path.components() {
+        let component = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        if previous_was_claude && component == "worktrees" {
+            return true;
+        }
+        previous_was_claude = component == ".claude";
+    }
+    false
+}
+
+fn is_codex_runtime_dir(path: &Path, lowered_name: &str) -> bool {
+    if !matches!(lowered_name, "backups" | ".tmp" | "plugins") {
+        return false;
+    }
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(".codex")
+    })
 }
 
 fn is_memory_filename(name: &str) -> bool {
@@ -292,11 +351,64 @@ fn memory_priority(unit: &MemoryUnit) -> (i32, usize) {
     (kind_priority, unit.path.components().count())
 }
 
-fn same_auto_prune_family(units: &[MemoryUnit]) -> bool {
-    units
-        .first()
-        .map(|first| units.iter().all(|unit| unit.path == first.path))
-        .unwrap_or(false)
+#[derive(Debug, Clone)]
+struct AutoPrunePlan {
+    reason: String,
+    removals: Vec<MemoryUnit>,
+}
+
+fn auto_prune_plan(units: &[MemoryUnit]) -> Option<AutoPrunePlan> {
+    let first = units.first()?;
+    if units.iter().all(|unit| unit.path == first.path) {
+        return Some(AutoPrunePlan {
+            reason: "exact duplicate inside the same file".to_string(),
+            removals: units.iter().skip(1).cloned().collect(),
+        });
+    }
+
+    if !supports_inherited_pruning(first.store_kind.as_str())
+        || !units.iter().all(|unit| unit.store_kind == first.store_kind)
+    {
+        return None;
+    }
+
+    let keeper = units.iter().min_by(|left, right| {
+        memory_priority(left)
+            .cmp(&memory_priority(right))
+            .then(left.path.cmp(&right.path))
+            .then(left.line_number.cmp(&right.line_number))
+    })?;
+    let removals: Vec<MemoryUnit> = units
+        .iter()
+        .filter(|unit| unit.path != keeper.path)
+        .filter(|unit| scoped_memory_file_applies_to(&keeper.path, &unit.path))
+        .cloned()
+        .collect();
+    if removals.len() + 1 == units.len() {
+        Some(AutoPrunePlan {
+            reason: format!(
+                "duplicate inherited from ancestor {}; child scoped files do not need a separate copy",
+                display_path(&keeper.path)
+            ),
+            removals,
+        })
+    } else {
+        None
+    }
+}
+
+fn supports_inherited_pruning(store_kind: &str) -> bool {
+    matches!(store_kind, "agents" | "claude")
+}
+
+fn scoped_memory_file_applies_to(parent_file: &Path, child_file: &Path) -> bool {
+    let Some(parent_dir) = parent_file.parent() else {
+        return false;
+    };
+    let Some(child_dir) = child_file.parent() else {
+        return false;
+    };
+    child_dir != parent_dir && child_dir.starts_with(parent_dir)
 }
 
 fn apply_removals(removals: &[MemoryPruneRemoval]) -> Result<Vec<String>> {
@@ -391,19 +503,20 @@ mod tests {
     }
 
     #[test]
-    fn same_kind_duplicates_across_files_are_report_only() {
+    fn same_kind_sibling_duplicates_across_files_are_report_only() {
         let temp = tempfile::tempdir().expect("tempdir");
-        fs::create_dir_all(temp.path().join("nested")).expect("nested");
+        fs::create_dir_all(temp.path().join("left")).expect("left");
+        fs::create_dir_all(temp.path().join("right")).expect("right");
         fs::write(
-            temp.path().join("CLAUDE.md"),
+            temp.path().join("left").join("CLAUDE.md"),
             "- Always run tests before claiming completion.\n",
         )
-        .expect("root claude");
+        .expect("left claude");
         fs::write(
-            temp.path().join("nested").join("CLAUDE.md"),
+            temp.path().join("right").join("CLAUDE.md"),
             "- Always run tests before claiming completion.\n",
         )
-        .expect("nested claude");
+        .expect("right claude");
 
         let report = run(&MemoryHygieneOptions {
             root: temp.path().to_path_buf(),
@@ -415,5 +528,108 @@ mod tests {
         assert_eq!(report.duplicate_groups.len(), 1);
         assert!(!report.duplicate_groups[0].auto_prunable);
         assert!(report.planned_removals.is_empty());
+    }
+
+    #[test]
+    fn inherited_agent_duplicate_is_auto_prunable_from_child_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let child = temp.path().join("project");
+        fs::create_dir_all(&child).expect("child");
+        fs::write(
+            temp.path().join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("root agents");
+        fs::write(
+            child.join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("child agents");
+
+        let report = run(&MemoryHygieneOptions {
+            root: temp.path().to_path_buf(),
+            write: false,
+            include_codex: false,
+        })
+        .expect("report");
+
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(report.duplicate_groups[0].auto_prunable);
+        assert_eq!(report.planned_removals.len(), 1);
+        assert_eq!(
+            PathBuf::from(&report.planned_removals[0].path),
+            child.join("AGENTS.md")
+        );
+    }
+
+    #[test]
+    fn sibling_agent_duplicates_are_report_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir_all(&left).expect("left");
+        fs::create_dir_all(&right).expect("right");
+        fs::write(
+            left.join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("left agents");
+        fs::write(
+            right.join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("right agents");
+
+        let report = run(&MemoryHygieneOptions {
+            root: temp.path().to_path_buf(),
+            write: false,
+            include_codex: false,
+        })
+        .expect("report");
+
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(!report.duplicate_groups[0].auto_prunable);
+        assert!(report.planned_removals.is_empty());
+    }
+
+    #[test]
+    fn worktree_and_runtime_dirs_are_not_scanned() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let normal = temp.path().join("project");
+        let worktrees = temp.path().join("project.omx-worktrees").join("feature");
+        let runtime = temp.path().join(".omx").join("state");
+        fs::create_dir_all(&normal).expect("normal");
+        fs::create_dir_all(&worktrees).expect("worktrees");
+        fs::create_dir_all(&runtime).expect("runtime");
+        fs::write(
+            normal.join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("normal agents");
+        fs::write(
+            worktrees.join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("worktree agents");
+        fs::write(
+            runtime.join("AGENTS.md"),
+            "- Always run tests before claiming completion.\n",
+        )
+        .expect("runtime agents");
+
+        let report = run(&MemoryHygieneOptions {
+            root: temp.path().to_path_buf(),
+            write: false,
+            include_codex: false,
+        })
+        .expect("report");
+
+        assert_eq!(report.files_scanned.len(), 1);
+        assert_eq!(
+            PathBuf::from(&report.files_scanned[0].path),
+            normal.join("AGENTS.md")
+        );
+        assert!(report.duplicate_groups.is_empty());
+        assert_eq!(report.skipped_dirs.len(), 2);
     }
 }

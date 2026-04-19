@@ -591,6 +591,12 @@ fn render_hygiene_report(
         if report.write_applied {
             lines.push(format!("Backups written: {}", report.backups.len()));
         }
+        if !report.skipped_dirs.is_empty() {
+            lines.push(format!(
+                "Skipped directories: {} (worktree/runtime/cache exclusions)",
+                report.skipped_dirs.len()
+            ));
+        }
         if !report.files_scanned.is_empty() {
             lines.push("Memory files:".to_string());
             for file in &report.files_scanned {
