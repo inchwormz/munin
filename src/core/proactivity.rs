@@ -1202,7 +1202,7 @@ fn evaluate_decision(
     } else if !interactive_desktop_available() {
         reasons.push("desktop_session_unavailable".to_string());
         ProactivityDecisionOutcome::Suppressed
-    } else if strategy_bootstrap_requested {
+    } else if strategy_bootstrap_requested && recommend_report.nudges.is_empty() {
         reasons.push("bootstrap_strategy_scope".to_string());
         ProactivityDecisionOutcome::Deferred
     } else if recommend_report.continuity.active
@@ -2726,6 +2726,74 @@ mod tests {
             ProactivityDecisionOutcome::QueueApproval.as_str(),
             "queue-approval"
         );
+    }
+
+    #[test]
+    fn bootstrap_flag_does_not_defer_when_strategy_has_interrupt_nudges() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = RuntimeContext {
+            config: sample_config(),
+            scope_id: "sitesorted-business".to_string(),
+            provider: ProactivityProvider::Claude,
+            project_path: PathBuf::from("C:/Users/OEM/Projects/sitesorted"),
+            schedule_local: "08:00".to_string(),
+            max_spawns_per_day: 1,
+            stale_claim_minutes: 90,
+            paths: ProactivityPaths {
+                queue_dir: temp.path().join("queue"),
+                results_dir: temp.path().join("results"),
+                briefs_dir: temp.path().join("briefs"),
+                state_dir: temp.path().join("state"),
+            },
+        };
+        let files = FileSet {
+            job_id: "morning-sitesorted-business-claude-2026-04-20".to_string(),
+            local_date: "2026-04-20".to_string(),
+            pending_path: temp.path().join("queue").join("job.json"),
+            claim_path: temp.path().join("queue").join("job.processing.json"),
+            result_path: temp.path().join("results").join("job.result.json"),
+            decision_path: temp.path().join("results").join("job.decision.json"),
+            brief_path: temp.path().join("briefs").join("job.md"),
+            launch_instructions_path: temp.path().join("briefs").join("job.launch.md"),
+            completed_path: temp.path().join("state").join("completed.json"),
+            heartbeat_path: temp.path().join("state").join("heartbeat"),
+        };
+        let mut report = fallback_recommend_report("sitesorted-business", "test".to_string());
+        report.continuity.active = false;
+        report.nudges.push(StrategicNudge {
+            task: "Address red-state `Revenue (NZD)`".to_string(),
+            item_id: Some("kpi-revenue-nzd".to_string()),
+            item_kind: "kpi".to_string(),
+            supports: Vec::new(),
+            why_now: "Current value is below target.".to_string(),
+            evidence: vec!["Current value: 0".to_string()],
+            evidence_freshness: "fresh".to_string(),
+            confidence: "high".to_string(),
+            interrupt_level: "interrupt".to_string(),
+            suppression_reason: None,
+            expected_effect: "Move the KPI toward target.".to_string(),
+        });
+        let decision = evaluate_decision(
+            &runtime,
+            &files,
+            true,
+            &report,
+            &ProactivityCompletedIndex {
+                schema_version: "test".to_string(),
+                records: Vec::new(),
+            },
+        )
+        .expect("decision");
+
+        assert_eq!(
+            decision.outcome,
+            ProactivityDecisionOutcome::QueueApproval,
+            "reasons: {:?}",
+            decision.reasons
+        );
+        assert!(decision
+            .reasons
+            .contains(&"approval_queue_ready".to_string()));
     }
 
     #[test]

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3 - 2026-04-20
+
+### Changed
+
+- Generated Munin umbrella skill now includes a step 0 that blocks auto-running `recall`, `doctor`, `proactivity`, or other status commands on a bare Munin invocation with no substantive ask. Agents stop and ask the user what to check instead.
+
 ## 0.5.2 - 2026-04-20
 
 ### Added
