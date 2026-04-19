@@ -1891,7 +1891,11 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("child")).expect("child dir");
         std::env::set_current_dir(tmp.path().join("child")).expect("set cwd");
         let expected_root = crate::core::utils::normalize_windows_path_string(
-            tmp.path().to_string_lossy().as_ref(),
+            tmp.path()
+                .canonicalize()
+                .expect("canonical temp")
+                .to_string_lossy()
+                .as_ref(),
         );
         let dot = resolved_project_path(Some("."));
         let parent = resolved_project_path(Some(".."));

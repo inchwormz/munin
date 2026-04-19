@@ -448,6 +448,10 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn comparable_path(path: &Path) -> String {
+        display_path(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+    }
+
     #[test]
     fn report_marks_cross_agent_duplicates_report_only() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -557,8 +561,8 @@ mod tests {
         assert!(report.duplicate_groups[0].auto_prunable);
         assert_eq!(report.planned_removals.len(), 1);
         assert_eq!(
-            PathBuf::from(&report.planned_removals[0].path),
-            child.join("AGENTS.md")
+            comparable_path(&PathBuf::from(&report.planned_removals[0].path)),
+            comparable_path(&child.join("AGENTS.md"))
         );
     }
 
@@ -626,8 +630,8 @@ mod tests {
 
         assert_eq!(report.files_scanned.len(), 1);
         assert_eq!(
-            PathBuf::from(&report.files_scanned[0].path),
-            normal.join("AGENTS.md")
+            comparable_path(&PathBuf::from(&report.files_scanned[0].path)),
+            comparable_path(&normal.join("AGENTS.md"))
         );
         assert!(report.duplicate_groups.is_empty());
         assert_eq!(report.skipped_dirs.len(), 2);
