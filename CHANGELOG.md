@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0-beta.3 - 2026-04-20
+
+### Changed
+
+- New proactivity installs default to `auto_spawn = true`.
+- `munin proactivity schedule-install` now writes `auto_spawn = true` into config when it installs the daemon.
+- Proactivity scheduler support is platform-aware: Windows Task Scheduler, macOS LaunchAgent, and Linux systemd user timer.
+- GitHub CI now runs Rust checks on Windows, macOS, and Linux.
+
 ## 0.5.0-beta.2 - 2026-04-19
 
 ### Added

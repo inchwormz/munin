@@ -713,6 +713,7 @@ pub fn install_schedule(
     runtime.config.proactivity.enabled = true;
     runtime.config.proactivity.default_scope = Some(runtime.scope_id.clone());
     runtime.config.proactivity.provider = runtime.provider;
+    runtime.config.proactivity.auto_spawn = true;
     runtime.config.proactivity.project_path = Some(runtime.project_path.clone());
     runtime
         .config
@@ -722,38 +723,22 @@ pub fn install_schedule(
     let exe = std::env::current_exe().context("Failed to resolve current munin executable")?;
     for legacy in legacy_task_names(&runtime.scope_id, runtime.provider) {
         if query_task_installed(&legacy) {
-            delete_schtask(&legacy)?;
+            delete_scheduled_task(&legacy)?;
         }
     }
-    create_schtask(
+    install_scheduled_task(
         &morning_task_name(&runtime.scope_id, runtime.provider),
-        &build_task_action(
-            &exe,
-            &["proactivity", "run", "--scope", runtime.scope_id.as_str()],
-        ),
-        &[
-            "/SC",
-            "DAILY",
-            "/ST",
-            runtime.schedule_local.as_str(),
-            "/IT",
-            "/F",
-        ],
+        &exe,
+        &["proactivity", "run", "--scope", runtime.scope_id.as_str()],
+        ScheduleSpec::Daily {
+            local_time: runtime.schedule_local.clone(),
+        },
     )?;
-    create_schtask(
+    install_scheduled_task(
         &sweep_task_name(&runtime.scope_id),
-        &build_task_action(
-            &exe,
-            &["proactivity", "sweep", "--scope", runtime.scope_id.as_str()],
-        ),
-        &[
-            "/SC",
-            "MINUTE",
-            "/MO",
-            &SCHEDULE_SWEEP_INTERVAL_MINUTES.to_string(),
-            "/IT",
-            "/F",
-        ],
+        &exe,
+        &["proactivity", "sweep", "--scope", runtime.scope_id.as_str()],
+        ScheduleSpec::IntervalMinutes(SCHEDULE_SWEEP_INTERVAL_MINUTES),
     )?;
 
     Ok(ProactivityScheduleInstallReport {
@@ -779,7 +764,7 @@ pub fn remove_schedule(
         .chain(legacy_task_names(&runtime.scope_id, runtime.provider))
     {
         if query_task_installed(&task) {
-            delete_schtask(&task)?;
+            delete_scheduled_task(&task)?;
             removed_tasks.push(task);
         }
     }
@@ -2187,20 +2172,113 @@ fn build_task_action(exe: &Path, args: &[&str]) -> String {
     )
 }
 
-fn create_schtask(name: &str, action: &str, trailing_args: &[&str]) -> Result<()> {
-    if !cfg!(windows) {
-        anyhow::bail!("Scheduled task installation is only supported on Windows");
+#[derive(Debug, Clone)]
+enum ScheduleSpec {
+    Daily { local_time: String },
+    IntervalMinutes(u32),
+}
+
+fn install_scheduled_task(
+    name: &str,
+    exe: &Path,
+    args: &[&str],
+    schedule: ScheduleSpec,
+) -> Result<()> {
+    #[cfg(windows)]
+    {
+        return install_windows_task(name, exe, args, schedule);
     }
-    let mut cmd = Command::new("schtasks");
-    cmd.arg("/Create")
-        .arg("/TN")
-        .arg(name)
-        .arg("/TR")
-        .arg(action);
-    for arg in trailing_args {
-        cmd.arg(arg);
+    #[cfg(target_os = "macos")]
+    {
+        return install_macos_launch_agent(name, exe, args, schedule);
     }
-    let output = cmd.output().context("Failed to execute schtasks /Create")?;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return install_systemd_user_timer(name, exe, args, schedule);
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        anyhow::bail!("Scheduled task installation is not supported on this operating system");
+    }
+}
+
+fn delete_scheduled_task(name: &str) -> Result<()> {
+    #[cfg(windows)]
+    {
+        return delete_windows_task(name);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return delete_macos_launch_agent(name);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return delete_systemd_user_timer(name);
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        anyhow::bail!("Scheduled task removal is not supported on this operating system");
+    }
+}
+
+fn query_task_installed(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        return Command::new("schtasks")
+            .args(["/Query", "/TN", name])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_launch_agent_path(name).exists();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return systemd_timer_path(name).exists();
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+#[cfg(windows)]
+fn install_windows_task(
+    name: &str,
+    exe: &Path,
+    args: &[&str],
+    schedule: ScheduleSpec,
+) -> Result<()> {
+    let action = build_task_action(exe, args);
+    let mut task_args = vec![
+        "/Create".to_string(),
+        "/TN".to_string(),
+        name.to_string(),
+        "/TR".to_string(),
+        action,
+    ];
+    match schedule {
+        ScheduleSpec::Daily { local_time } => task_args.extend([
+            "/SC".to_string(),
+            "DAILY".to_string(),
+            "/ST".to_string(),
+            local_time,
+            "/IT".to_string(),
+            "/F".to_string(),
+        ]),
+        ScheduleSpec::IntervalMinutes(minutes) => task_args.extend([
+            "/SC".to_string(),
+            "MINUTE".to_string(),
+            "/MO".to_string(),
+            minutes.to_string(),
+            "/IT".to_string(),
+            "/F".to_string(),
+        ]),
+    }
+    let output = Command::new("schtasks")
+        .args(task_args.iter().map(String::as_str))
+        .output()
+        .context("Failed to execute schtasks /Create")?;
     if !output.status.success() {
         anyhow::bail!(
             "schtasks /Create failed for {}: {}",
@@ -2211,10 +2289,8 @@ fn create_schtask(name: &str, action: &str, trailing_args: &[&str]) -> Result<()
     Ok(())
 }
 
-fn delete_schtask(name: &str) -> Result<()> {
-    if !cfg!(windows) {
-        anyhow::bail!("Scheduled task removal is only supported on Windows");
-    }
+#[cfg(windows)]
+fn delete_windows_task(name: &str) -> Result<()> {
     let output = Command::new("schtasks")
         .args(["/Delete", "/TN", name, "/F"])
         .output()
@@ -2229,15 +2305,299 @@ fn delete_schtask(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn query_task_installed(name: &str) -> bool {
-    if !cfg!(windows) {
-        return false;
+#[cfg(target_os = "macos")]
+fn install_macos_launch_agent(
+    name: &str,
+    exe: &Path,
+    args: &[&str],
+    schedule: ScheduleSpec,
+) -> Result<()> {
+    let path = macos_launch_agent_path(name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    Command::new("schtasks")
-        .args(["/Query", "/TN", name])
+    let label = launchd_label(name);
+    fs::write(&path, launchd_plist(&label, exe, args, &schedule))
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    let domain = launchd_domain();
+    let _ = Command::new("launchctl")
+        .args(["bootout", domain.as_str(), path.to_string_lossy().as_ref()])
+        .output();
+    let output = Command::new("launchctl")
+        .args([
+            "bootstrap",
+            domain.as_str(),
+            path.to_string_lossy().as_ref(),
+        ])
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .context("Failed to execute launchctl bootstrap")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "launchctl bootstrap failed for {}: {}",
+            name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = Command::new("launchctl")
+        .args(["enable", format!("{domain}/{label}").as_str()])
+        .output();
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn delete_macos_launch_agent(name: &str) -> Result<()> {
+    let path = macos_launch_agent_path(name);
+    let label = launchd_label(name);
+    let domain = launchd_domain();
+    let _ = Command::new("launchctl")
+        .args(["bootout", domain.as_str(), path.to_string_lossy().as_ref()])
+        .output();
+    let _ = Command::new("launchctl")
+        .args(["disable", format!("{domain}/{label}").as_str()])
+        .output();
+    if path.exists() {
+        fs::remove_file(&path).with_context(|| format!("Failed to remove {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_path(name: &str) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", launchd_label(name)))
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_domain() -> String {
+    format!("gui/{}", unsafe { libc::getuid() })
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_label(name: &str) -> String {
+    format!("com.munin.{}", scheduler_slug(name))
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_plist(label: &str, exe: &Path, args: &[&str], schedule: &ScheduleSpec) -> String {
+    let mut program_args = String::new();
+    program_args.push_str(&format!(
+        "        <string>{}</string>\n",
+        xml_escape(&exe.display().to_string())
+    ));
+    for arg in args {
+        program_args.push_str(&format!("        <string>{}</string>\n", xml_escape(arg)));
+    }
+    let schedule_xml = match schedule {
+        ScheduleSpec::Daily { local_time } => {
+            let (hour, minute) = parse_local_time(local_time).unwrap_or((8, 0));
+            format!(
+                "    <key>StartCalendarInterval</key>\n    <dict>\n        <key>Hour</key>\n        <integer>{hour}</integer>\n        <key>Minute</key>\n        <integer>{minute}</integer>\n    </dict>\n"
+            )
+        }
+        ScheduleSpec::IntervalMinutes(minutes) => {
+            format!(
+                "    <key>StartInterval</key>\n    <integer>{}</integer>\n",
+                minutes.saturating_mul(60)
+            )
+        }
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{}</string>
+    <key>ProgramArguments</key>
+    <array>
+{}    </array>
+{}    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>{}</string>
+    <key>StandardErrorPath</key>
+    <string>{}</string>
+</dict>
+</plist>
+"#,
+        xml_escape(label),
+        program_args,
+        schedule_xml,
+        xml_escape(&scheduler_log_path(label, "out").display().to_string()),
+        xml_escape(&scheduler_log_path(label, "err").display().to_string())
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_systemd_user_timer(
+    name: &str,
+    exe: &Path,
+    args: &[&str],
+    schedule: ScheduleSpec,
+) -> Result<()> {
+    let service = systemd_service_path(name);
+    let timer = systemd_timer_path(name);
+    if let Some(parent) = service.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    fs::write(&service, systemd_service(name, exe, args))
+        .with_context(|| format!("Failed to write {}", service.display()))?;
+    fs::write(&timer, systemd_timer(name, &schedule))
+        .with_context(|| format!("Failed to write {}", timer.display()))?;
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output();
+    let output = Command::new("systemctl")
+        .args([
+            "--user",
+            "enable",
+            "--now",
+            &systemd_unit_name(name, "timer"),
+        ])
+        .output()
+        .context("Failed to execute systemctl --user enable --now")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "systemctl --user enable failed for {}: {}",
+            name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn delete_systemd_user_timer(name: &str) -> Result<()> {
+    let timer_unit = systemd_unit_name(name, "timer");
+    let _ = Command::new("systemctl")
+        .args(["--user", "disable", "--now", &timer_unit])
+        .output();
+    for path in [systemd_timer_path(name), systemd_service_path(name)] {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        }
+    }
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output();
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_user_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".config")
+        })
+        .join("systemd")
+        .join("user")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_service_path(name: &str) -> PathBuf {
+    systemd_user_dir().join(systemd_unit_name(name, "service"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_timer_path(name: &str) -> PathBuf {
+    systemd_user_dir().join(systemd_unit_name(name, "timer"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_unit_name(name: &str, suffix: &str) -> String {
+    format!("munin-proactivity-{}.{}", scheduler_slug(name), suffix)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_service(name: &str, exe: &Path, args: &[&str]) -> String {
+    let exec = std::iter::once(exe.display().to_string())
+        .chain(args.iter().map(|arg| arg.to_string()))
+        .map(|part| systemd_escape_arg(&part))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "[Unit]\nDescription=Munin proactivity {name}\n\n[Service]\nType=oneshot\nExecStart={exec}\n"
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_timer(name: &str, schedule: &ScheduleSpec) -> String {
+    let schedule_line = match schedule {
+        ScheduleSpec::Daily { local_time } => format!("OnCalendar=*-*-* {local_time}:00"),
+        ScheduleSpec::IntervalMinutes(minutes) => {
+            format!("OnUnitActiveSec={}min\nOnBootSec={}min", minutes, minutes)
+        }
+    };
+    format!(
+        "[Unit]\nDescription=Munin proactivity timer {name}\n\n[Timer]\n{schedule_line}\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn systemd_escape_arg(value: &str) -> String {
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'')
+    {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
+fn scheduler_slug(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+#[cfg(target_os = "macos")]
+fn parse_local_time(value: &str) -> Option<(u32, u32)> {
+    let (hour, minute) = value.split_once(':')?;
+    Some((hour.parse().ok()?, minute.parse().ok()?))
+}
+
+#[cfg(target_os = "macos")]
+fn scheduler_log_path(label: &str, stream: &str) -> PathBuf {
+    context_data_dir()
+        .unwrap_or_else(|_| {
+            dirs::data_local_dir()
+                .or_else(dirs::data_dir)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("context")
+        })
+        .join(PROACTIVITY_DIR)
+        .join("logs")
+        .join(format!("{label}.{stream}.log"))
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]

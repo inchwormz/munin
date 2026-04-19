@@ -2,7 +2,7 @@
 
 Local memory system for agent-driven development.
 
-Current testing build: `v0.5.0-beta.2`.
+Current testing build: `v0.5.0-beta.3`.
 
 ## What It Is
 
@@ -136,6 +136,8 @@ Raw recall/session history is fallback provenance, not the default answer path.
 - `src/session_brain/` - current-session startup brain
 - `src/session_intelligence/` - local Claude/Codex session readers
 - `src/proactivity_cmd.rs` - proactivity CLI rendering
+
+`munin proactivity schedule-install` installs the morning runner for the current operating system. On Windows it uses Task Scheduler, on macOS it installs a LaunchAgent, and on Linux it installs a systemd user timer. New installs default to automatic spawning at the scheduled morning run.
 
 ## Notes
 

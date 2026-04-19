@@ -80,7 +80,7 @@ impl Default for ProactivityConfig {
             default_scope: None,
             schedule_local: "08:00".to_string(),
             provider: ProactivityProvider::Claude,
-            auto_spawn: false,
+            auto_spawn: true,
             project_path: None,
             queue_dir: None,
             results_dir: None,

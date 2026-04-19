@@ -1562,7 +1562,7 @@ fn render_bullets(items: &[&str]) -> String {
 
 const CODEX_PLUGIN_JSON: &str = r#"{
   "name": "munin-memory",
-  "version": "0.5.0-beta.2",
+  "version": "0.5.0-beta.3",
   "description": "Munin local memory surfaces for Codex.",
   "interface": {
     "displayName": "Munin Memory",

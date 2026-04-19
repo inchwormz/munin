@@ -52,9 +52,9 @@ Commands run against the separated `munin-memory` project and installed binary:
 |---|---|
 | `cargo build` | pass |
 | `cargo test` | 328 passed |
-| `cargo install --path . --force` | installed `munin 0.5.0-beta.2` from `C:\Users\OEM\Projects\munin-memory` |
+| `cargo install --path . --force` | installed `munin 0.5.0-beta.3` from `C:\Users\OEM\Projects\munin-memory` |
 | `munin install --check-resolvable` | 31 Munin commands parsed successfully |
-| `munin --version` | `munin 0.5.0-beta.2` |
+| `munin --version` | `munin 0.5.0-beta.3` |
 | `munin resolve "memory hygiene"` | routes to `hygiene` |
 | `munin hygiene --format text` | now skips worktree/runtime/cache dirs; dry-run only |
 | `munin memory-os promotion --format text` | blocked: missing `test-private` and `adversarial-private` proof rows |
