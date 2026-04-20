@@ -3226,9 +3226,10 @@ fn render_friction_text(report: &MemoryOsFrictionReport) {
         format_optional_metric(report.redirects.avg_seconds_to_success_after_redirect, "s")
     );
     println!();
-    println!("Correction Evidence");
-    println!("-------------------");
-    render_correction_patterns(&report.repeated_corrections);
+    println!("Corrections to Codify");
+    println!("---------------------");
+    println!("Repeated wrong -> corrected patterns with no permanent rule yet. Candidates for a codified fix.");
+    render_correction_patterns_to_codify(&report.repeated_corrections);
     println!();
     println!("Likely Misunderstandings");
     println!("-----------------------");
@@ -3504,6 +3505,74 @@ fn render_correction_patterns(patterns: &[MemoryOsCorrectionPatternSummary]) {
             println!("    now: {}", corrected_preview);
         }
     }
+}
+
+fn render_correction_patterns_to_codify(patterns: &[MemoryOsCorrectionPatternSummary]) {
+    let filtered: Vec<&MemoryOsCorrectionPatternSummary> = patterns
+        .iter()
+        .filter(|pattern| {
+            let wrong = pattern.wrong_command.trim();
+            let corrected = pattern.corrected_command.trim();
+            !wrong.is_empty() && !corrected.is_empty() && wrong != corrected
+        })
+        .collect();
+    if filtered.is_empty() {
+        println!("- none");
+        return;
+    }
+    for (index, pattern) in filtered.iter().enumerate() {
+        let wrong = pattern.wrong_command.split_whitespace().collect::<Vec<_>>().join(" ");
+        let corrected = pattern.corrected_command.split_whitespace().collect::<Vec<_>>().join(" ");
+        let status = if pattern.successful_replays > pattern.failed_replays && pattern.successful_replays >= pattern.count {
+            "replaying-clean"
+        } else {
+            "uncodified"
+        };
+        println!(
+            "{}. [{}|{}] repeat correction x{} ({} succeeded, {} failed)",
+            index + 1,
+            pattern.error_kind,
+            status,
+            pattern.count,
+            pattern.successful_replays,
+            pattern.failed_replays
+        );
+        let (wrong_display, corrected_display) = command_diff_display(&wrong, &corrected, 160);
+        println!("    wrong:     {}", wrong_display);
+        println!("    corrected: {}", corrected_display);
+        println!("    candidate rule: prefer the corrected form; codify once the pattern recurs across 3+ sessions.");
+    }
+}
+
+fn command_diff_display(wrong: &str, corrected: &str, max_tail: usize) -> (String, String) {
+    let common = common_prefix_len(wrong, corrected);
+    let shared_threshold = 40usize;
+    if common >= shared_threshold && common < wrong.len().min(corrected.len()) {
+        let shared_preview: String = wrong.chars().take(24).collect();
+        let wrong_tail = tail_from(wrong, common, max_tail);
+        let corrected_tail = tail_from(corrected, common, max_tail);
+        (
+            format!("[shared {}ch: `{}...`] ...{}", common, shared_preview, wrong_tail),
+            format!("[shared {}ch: `{}...`] ...{}", common, shared_preview, corrected_tail),
+        )
+    } else {
+        (display_text(wrong, max_tail), display_text(corrected, max_tail))
+    }
+}
+
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.chars()
+        .zip(b.chars())
+        .take_while(|(ca, cb)| ca == cb)
+        .map(|(ca, _)| ca.len_utf8())
+        .sum()
+}
+
+fn tail_from(text: &str, start_byte: usize, max_len: usize) -> String {
+    let start = start_byte.min(text.len());
+    let tail = text.get(start..).unwrap_or("");
+    let trimmed = tail.trim_start();
+    display_text(trimmed, max_len)
 }
 
 fn action_memory_cue_is_noise(summary: &str) -> bool {

@@ -1,6 +1,6 @@
 [package]
 name = "munin-memory"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 autobins = false
 authors = ["John McKeown"]

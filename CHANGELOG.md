@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.4 - 2026-04-20
+
+### Changed
+
+- `munin friction --format text` renames the raw-corrections block from "Correction Evidence" to "Corrections to Codify" and frames each repeat wrong->corrected pattern as an actionable candidate for a codified fix. Each item is numbered and carries an `uncodified` or `replaying-clean` status so agents can see which patterns still need a permanent rule.
+- Correction pattern rendering now uses a shared-prefix-aware diff, so wrong/corrected commands with long common prefixes still show the part that actually differs instead of two identical truncations.
+
 ## 0.5.3 - 2026-04-20
 
 ### Changed
