@@ -1964,7 +1964,7 @@ fn build_launch_command(
         })
         .unwrap_or_default();
     let prompt = format!(
-        "{token}. The daemon already claimed the job. Read the brief at \"{brief_path}\".{leading_task} When you finish, run: munin proactivity complete --job-id \"{job_id}\" --status complete --summary \"<one sentence summary>\". On failure run: munin proactivity complete --job-id \"{job_id}\" --status failed --summary \"<short failure summary>\" --error \"<concrete error>\". Full instructions are also at \"{launch_path}\".",
+        "{token}. The daemon already claimed the job. Read the brief at '{brief_path}'.{leading_task} When you finish, run: munin proactivity complete --job-id '{job_id}' --status complete --summary '<one sentence summary>'. On failure run: munin proactivity complete --job-id '{job_id}' --status failed --summary '<short failure summary>' --error '<concrete error>'. Full instructions are also at '{launch_path}'.",
         token = MORNING_PROMPT_TOKEN,
         job_id = job.job_id,
         brief_path = job.brief_path,

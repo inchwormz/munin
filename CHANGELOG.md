@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.5 - 2026-04-20
+
+### Fixed
+
+- Morning proactivity spawn on Windows no longer fragments the prompt. The spawn command quoted inner paths and placeholders (`"{brief_path}"`, `"{job_id}"`, `--error "<concrete error>"`) with double quotes, which `quote_for_cmd` then doubled to `""..."".` cmd interpreted each `""` as quote-close-then-open and split the prompt into 28+ separate tokens, so the spawned Claude session received stray args like `--error` and `--summary` and rejected them. The prompt now uses single quotes around placeholders, which cmd passes through verbatim, so the whole prompt reaches the spawned session as one intact argument.
+- Pairs with a companion fix to the user's `claude.ps1` wrapper (separate file, outside this repo) that dropped `[Parameter(ValueFromRemainingArguments)]` to keep the script a plain script instead of an advanced function — otherwise PowerShell matched `--error` against auto-added common parameters (`-ErrorAction`/`-ErrorVariable`) and crashed with AmbiguousParameter before the prompt ever reached claude.exe.
+
 ## 0.5.4 - 2026-04-20
 
 ### Changed
