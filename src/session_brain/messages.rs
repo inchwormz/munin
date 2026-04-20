@@ -165,14 +165,20 @@ fn resolve_transcript_target(
                     provider: SessionBrainProvider::Codex,
                     session_id: left.session_id,
                     path: left.path,
-                    source_status: fallback_source_status(left.modified_at),
+                    source_status: fallback_source_status(
+                        SessionBrainProvider::Codex,
+                        left.modified_at,
+                    ),
                 })
             } else {
                 Some(TranscriptTarget {
                     provider: SessionBrainProvider::Claude,
                     session_id: right.session_id,
                     path: right.path,
-                    source_status: fallback_source_status(right.modified_at),
+                    source_status: fallback_source_status(
+                        SessionBrainProvider::Claude,
+                        right.modified_at,
+                    ),
                 })
             }
         }
@@ -180,13 +186,19 @@ fn resolve_transcript_target(
             provider: SessionBrainProvider::Codex,
             session_id: candidate.session_id,
             path: candidate.path,
-            source_status: fallback_source_status(candidate.modified_at),
+            source_status: fallback_source_status(
+                SessionBrainProvider::Codex,
+                candidate.modified_at,
+            ),
         }),
         (None, Some(candidate)) => Some(TranscriptTarget {
             provider: SessionBrainProvider::Claude,
             session_id: candidate.session_id,
             path: candidate.path,
-            source_status: fallback_source_status(candidate.modified_at),
+            source_status: fallback_source_status(
+                SessionBrainProvider::Claude,
+                candidate.modified_at,
+            ),
         }),
         (None, None) => None,
     };
@@ -201,12 +213,38 @@ fn transcript_modified_at(path: &Path) -> Option<String> {
         .map(|modified| DateTime::<Utc>::from(modified).to_rfc3339())
 }
 
-fn fallback_source_status(modified_at: SystemTime) -> String {
+fn fallback_source_status(provider: SessionBrainProvider, modified_at: SystemTime) -> String {
+    decide_source_status(modified_at, in_active_orchestrator(provider), Utc::now())
+}
+
+// Claude Code never exports CLAUDE_SESSION_ID to subshells, so the env-var path
+// in resolve_transcript_target is unreachable on the native shell. When we can
+// confirm we're inside the matching orchestrator AND the transcript is being
+// actively written to, treat it as live. The 120s window covers idle time
+// during long-running tool calls.
+fn decide_source_status(
+    modified_at: SystemTime,
+    in_orchestrator: bool,
+    now: DateTime<Utc>,
+) -> String {
     let modified = DateTime::<Utc>::from(modified_at);
-    if Utc::now().signed_duration_since(modified) > Duration::hours(24) {
-        "stale".to_string()
-    } else {
-        "fallback-latest".to_string()
+    let age = now.signed_duration_since(modified);
+    if age > Duration::hours(24) {
+        return "stale".to_string();
+    }
+    if age <= Duration::seconds(120) && in_orchestrator {
+        return "live".to_string();
+    }
+    "fallback-latest".to_string()
+}
+
+fn in_active_orchestrator(provider: SessionBrainProvider) -> bool {
+    match provider {
+        SessionBrainProvider::Claude => std::env::var("CLAUDECODE").is_ok(),
+        SessionBrainProvider::Codex => {
+            std::env::var("CODEX_HOME").is_ok() || std::env::var("CODEX_THREAD_ID").is_ok()
+        }
+        SessionBrainProvider::Unknown => false,
     }
 }
 
@@ -1129,6 +1167,35 @@ mod tests {
         );
 
         assert_eq!(normalized, "Keep the real ask.\nStill keep this line.");
+    }
+
+    #[test]
+    fn decide_source_status_marks_recent_orchestrator_transcript_live() {
+        let now = Utc::now();
+        let recent = SystemTime::from(now - Duration::seconds(3));
+        assert_eq!(decide_source_status(recent, true, now), "live");
+    }
+
+    #[test]
+    fn decide_source_status_keeps_fallback_when_orchestrator_absent() {
+        let now = Utc::now();
+        let recent = SystemTime::from(now - Duration::seconds(3));
+        assert_eq!(decide_source_status(recent, false, now), "fallback-latest");
+    }
+
+    #[test]
+    fn decide_source_status_demotes_idle_orchestrator_transcript_to_fallback() {
+        let now = Utc::now();
+        let idle = SystemTime::from(now - Duration::seconds(180));
+        assert_eq!(decide_source_status(idle, true, now), "fallback-latest");
+    }
+
+    #[test]
+    fn decide_source_status_marks_old_transcript_stale_regardless_of_orchestrator() {
+        let now = Utc::now();
+        let old = SystemTime::from(now - Duration::hours(48));
+        assert_eq!(decide_source_status(old, true, now), "stale");
+        assert_eq!(decide_source_status(old, false, now), "stale");
     }
 
     #[test]
