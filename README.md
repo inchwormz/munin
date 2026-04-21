@@ -2,15 +2,15 @@
 
 Local memory for Claude Code and Codex.
 
-Munin ingests all Claude Codex sessions. Approx time for 3000 sessions raw data = < 1minute
+Munin ingests Claude and Codex sessions and compiles them into local Memory OS
+surfaces for live continuity, strategy, and recall.
 
-Munin compiles them into a local Memory OS Kernel
-and exposes that memory back to your agent through CLI commands, Claude slash
+It exposes that memory back to your agent through CLI commands, Claude slash
 commands, and Codex skills. It is designed for developers who want agents to
 remember active work, repeated mistakes, strategic priorities, and unfinished
 tasks without sending that memory to a hosted service.
 
-Current testing build: `v0.5.4`.
+Current release: `v0.5.6`.
 
 [![CI](https://github.com/inchwormz/munin-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/inchwormz/munin-memory/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/munin-memory.svg)](https://crates.io/crates/munin-memory)
