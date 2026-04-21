@@ -123,7 +123,8 @@ impl SessionFocus {
     }
 
     pub(crate) fn suppresses_machine_fallback(&self) -> bool {
-        self.has_live_user_intent()
+        self.saw_user_message
+            || self.has_live_user_intent()
             || self
                 .suppression_signals
                 .iter()

@@ -895,6 +895,27 @@ mod tests {
     }
 
     #[test]
+    fn unclassified_live_user_message_blocks_strategy_current_goal_fallback() {
+        let focus = build_session_focus(
+            &[message(
+                "user",
+                "What the 5 UserPromptSubmit hooks actually do:",
+            )],
+            &[],
+        );
+        let agenda = build_agenda(
+            &sample_context(),
+            &focus,
+            &["Partial strategy memory: Audit data schema completeness.txt".to_string()],
+            &SessionBrainBuildOptions::default(),
+        );
+
+        assert!(focus.saw_user_message);
+        assert!(focus.current_ask_candidates.is_empty());
+        assert!(agenda.current_goal.is_none());
+    }
+
+    #[test]
     fn dissatisfaction_suppresses_worldview_fallback_without_replacing_live_ask() {
         let focus = build_session_focus(
             &[message(

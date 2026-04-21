@@ -219,39 +219,19 @@ fn transcript_modified_at(path: &Path) -> Option<String> {
         .map(|modified| DateTime::<Utc>::from(modified).to_rfc3339())
 }
 
-fn fallback_source_status(provider: SessionBrainProvider, modified_at: SystemTime) -> String {
-    decide_source_status(modified_at, in_active_orchestrator(provider), Utc::now())
+fn fallback_source_status(_provider: SessionBrainProvider, modified_at: SystemTime) -> String {
+    decide_source_status(modified_at, Utc::now())
 }
 
-// Claude Code never exports CLAUDE_SESSION_ID to subshells, so the env-var path
-// in resolve_transcript_target is unreachable on the native shell. When we can
-// confirm we're inside the matching orchestrator AND the transcript is being
-// actively written to, treat it as live. The 120s window covers idle time
-// during long-running tool calls.
-fn decide_source_status(
-    modified_at: SystemTime,
-    in_orchestrator: bool,
-    now: DateTime<Utc>,
-) -> String {
+// Exact session IDs are the only safe proof of a live terminal. Fallback
+// transcript discovery is project-scoped, so another terminal can be newer.
+fn decide_source_status(modified_at: SystemTime, now: DateTime<Utc>) -> String {
     let modified = DateTime::<Utc>::from(modified_at);
     let age = now.signed_duration_since(modified);
     if age > Duration::hours(24) {
         return "stale".to_string();
     }
-    if age <= Duration::seconds(120) && in_orchestrator {
-        return "live".to_string();
-    }
     "fallback-latest".to_string()
-}
-
-fn in_active_orchestrator(provider: SessionBrainProvider) -> bool {
-    match provider {
-        SessionBrainProvider::Claude => std::env::var("CLAUDECODE").is_ok(),
-        SessionBrainProvider::Codex => {
-            std::env::var("CODEX_HOME").is_ok() || std::env::var("CODEX_THREAD_ID").is_ok()
-        }
-        SessionBrainProvider::Unknown => false,
-    }
 }
 
 fn find_codex_session_path(session_id: &str) -> Result<Option<PathBuf>> {
@@ -1319,32 +1299,24 @@ mod tests {
     }
 
     #[test]
-    fn decide_source_status_marks_recent_orchestrator_transcript_live() {
+    fn decide_source_status_keeps_recent_fallback_transcript_non_live() {
         let now = Utc::now();
         let recent = SystemTime::from(now - Duration::seconds(3));
-        assert_eq!(decide_source_status(recent, true, now), "live");
+        assert_eq!(decide_source_status(recent, now), "fallback-latest");
     }
 
     #[test]
-    fn decide_source_status_keeps_fallback_when_orchestrator_absent() {
-        let now = Utc::now();
-        let recent = SystemTime::from(now - Duration::seconds(3));
-        assert_eq!(decide_source_status(recent, false, now), "fallback-latest");
-    }
-
-    #[test]
-    fn decide_source_status_demotes_idle_orchestrator_transcript_to_fallback() {
+    fn decide_source_status_keeps_idle_fallback_transcript_non_live() {
         let now = Utc::now();
         let idle = SystemTime::from(now - Duration::seconds(180));
-        assert_eq!(decide_source_status(idle, true, now), "fallback-latest");
+        assert_eq!(decide_source_status(idle, now), "fallback-latest");
     }
 
     #[test]
-    fn decide_source_status_marks_old_transcript_stale_regardless_of_orchestrator() {
+    fn decide_source_status_marks_old_fallback_transcript_stale() {
         let now = Utc::now();
         let old = SystemTime::from(now - Duration::hours(48));
-        assert_eq!(decide_source_status(old, true, now), "stale");
-        assert_eq!(decide_source_status(old, false, now), "stale");
+        assert_eq!(decide_source_status(old, now), "stale");
     }
 
     #[test]

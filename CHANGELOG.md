@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.7 - 2026-04-21
+
+### Fixed
+
+- Session Brain now treats only exact session-id transcript matches as live, so a newer same-project transcript from another terminal cannot appear as the current ask.
+- Live user messages now suppress durable memory and strategy fallback even when the ask is not classified, preventing stale memory from replacing the active session.
+
 ## 0.5.6 - 2026-04-21
 
 ### Added
