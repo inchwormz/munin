@@ -1480,6 +1480,8 @@ fn build_doctor_report(
         Ok(report) => doctor_load_strategy_metrics(report),
         Err(err) => Err(anyhow!("strategy inspect failed: {err}")),
     };
+    let partial_strategy_memory = doctor_partial_strategy_memory(tracker).unwrap_or_default();
+    let has_partial_strategy_memory = !partial_strategy_memory.is_empty();
 
     let corpus = build_doctor_corpus(&onboarding);
     let strategy_signal_count = strategy_inspect
@@ -1543,7 +1545,7 @@ fn build_doctor_report(
     });
     signal_quality.push(MemoryOsDoctorCheck {
         name: "Strategy CLI routing is healthy".to_string(),
-        status: if strategy_signal_count > 0 {
+        status: if strategy_signal_count > 0 || has_partial_strategy_memory {
             "pass"
         } else {
             "fail"
@@ -1554,16 +1556,23 @@ fn build_doctor_report(
                 "Scope `{}` resolves to {} strategy goals/KPIs/initiatives/constraints/assumptions.",
                 strategy_scope, strategy_signal_count
             )
+        } else if has_partial_strategy_memory {
+            "No complete strategy kernel is configured, but compiled partial strategy memory is present and usable."
+                .to_string()
         } else {
             format!("Scope `{strategy_scope}` did not resolve to a populated strategy kernel.")
         },
-        evidence: match &strategy_inspect {
-            Ok(report) => vec![
+        evidence: if has_partial_strategy_memory && strategy_signal_count == 0 {
+            partial_strategy_memory.clone()
+        } else {
+            match &strategy_inspect {
+                Ok(report) => vec![
                 format!("goals: {}", report.kernel.goals.len()),
                 format!("kpis: {}", report.kernel.kpis.len()),
                 format!("initiatives: {}", report.kernel.initiatives.len()),
             ],
-            Err(err) => vec![err.to_string()],
+                Err(err) => vec![err.to_string()],
+            }
         },
     });
     signal_quality.push(MemoryOsDoctorCheck {
@@ -1571,6 +1580,8 @@ fn build_doctor_report(
         status: if strategy_metrics.is_ok() && !strategy_metrics_empty {
             "pass"
         } else if strategy_metrics.is_ok() {
+            "warn"
+        } else if has_partial_strategy_memory {
             "warn"
         } else {
             "fail"
@@ -1582,11 +1593,19 @@ fn build_doctor_report(
         } else if strategy_metrics.is_ok() {
             "Metrics snapshot has at least one instrumented KPI, dependency, instrumentation flag, or initiative signal."
                 .to_string()
+        } else if has_partial_strategy_memory {
+            "Formal strategy metrics are not configured, but partial compiled strategy memory is available."
+                .to_string()
         } else {
             format!("Could not read strategy metrics for scope `{strategy_scope}`.")
         },
         evidence: match &strategy_metrics {
             Ok(metrics) => doctor_strategy_metrics_evidence(metrics),
+            Err(err) if has_partial_strategy_memory => {
+                let mut evidence = partial_strategy_memory.clone();
+                evidence.push(format!("formal metrics unavailable: {err}"));
+                evidence
+            }
             Err(err) => vec![err.to_string()],
         },
     });
@@ -1910,6 +1929,48 @@ fn doctor_strategy_metrics_evidence(metrics: &strategy::StrategyMetricsSnapshot)
         format!("dependency_states: {}", metrics.dependency_states.len()),
         format!("initiatives: {}", metrics.initiatives.len()),
     ]
+}
+
+fn doctor_partial_strategy_memory(tracker: &Tracker) -> Result<Vec<String>> {
+    let profile = tracker.get_memory_os_profile_report(MemoryOsInspectionScope::User, None)?;
+    let mut evidence = profile
+        .recurring_themes
+        .iter()
+        .filter(|finding| {
+            matches!(
+                finding.title.as_str(),
+                "Business strategy" | "Lead generation strategy" | "SiteSorted focus"
+            )
+        })
+        .take(3)
+        .map(|finding| {
+            format!(
+                "partial strategy memory: {}",
+                display_text(&finding.summary, 180)
+            )
+        })
+        .collect::<Vec<_>>();
+    if evidence.is_empty() {
+        let overview =
+            tracker.get_memory_os_overview_report(MemoryOsInspectionScope::User, None)?;
+        evidence.extend(
+            overview
+                .top_projects
+                .iter()
+                .filter(|project| {
+                    project.repo_label.contains("sitesorted")
+                        || project.repo_label.contains("munin")
+                })
+                .take(3)
+                .map(|project| {
+                    format!(
+                        "project focus: {} | sessions {} | shells {}",
+                        project.repo_label, project.sessions, project.shell_executions
+                    )
+                }),
+        );
+    }
+    Ok(evidence)
 }
 
 fn doctor_import_freshness_status(completed_at: Option<&str>) -> String {
