@@ -90,20 +90,6 @@ fn resolve_relevant_scopes(config: &Config, project_root: &Path) -> Vec<String> 
             }),
     );
 
-    if let Some(default_scope) = config.strategy.configured_scope_name(None) {
-        if !scopes.contains(&default_scope) {
-            scopes.push(default_scope);
-        }
-    }
-
-    if let Ok(reports) = strategy::discover_inspect_reports(3) {
-        for report in reports {
-            if !scopes.contains(&report.scope_id) {
-                scopes.push(report.scope_id);
-            }
-        }
-    }
-
     scopes
 }
 
@@ -129,4 +115,37 @@ fn normalized_project_root(path: &Path) -> String {
 #[allow(dead_code)]
 fn as_path_buf(path: &Path) -> PathBuf {
     path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::StrategyConfig;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn relevant_scopes_do_not_include_non_matching_default_scope() {
+        let mut scopes = BTreeMap::new();
+        scopes.insert(
+            "sitesorted-business".to_string(),
+            StrategyScopeConfig {
+                continuity_project_path: Some(PathBuf::from("C:/Users/OEM/Projects/sitesorted")),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            strategy: StrategyConfig {
+                enabled: true,
+                default_scope: Some("sitesorted-business".to_string()),
+                directory: None,
+                scopes,
+            },
+            ..Default::default()
+        };
+
+        let relevant =
+            resolve_relevant_scopes(&config, Path::new("C:/Users/OEM/Projects/munin-memory"));
+
+        assert!(relevant.is_empty());
+    }
 }

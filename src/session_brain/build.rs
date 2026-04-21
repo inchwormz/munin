@@ -525,26 +525,8 @@ fn dependency_linked_obligation(
 }
 
 fn partial_strategy_from_user_context(user: &super::types::SessionBrainUserContext) -> Vec<String> {
-    [
-        user.brief.as_str(),
-        user.overview.as_str(),
-        user.profile.as_str(),
-    ]
-    .iter()
-    .flat_map(|line| line.split(" | "))
-    .map(str::trim)
-    .filter(|line| {
-        let lowered = line.to_ascii_lowercase();
-        lowered.contains("strategy")
-            || lowered.contains("kpi")
-            || lowered.contains("lead database")
-            || lowered.contains("sitesorted")
-            || lowered.contains("quarterly")
-            || lowered.contains("revenue")
-    })
-    .take(5)
-    .map(|line| format!("Partial strategy memory: {line}"))
-    .collect()
+    let _ = user;
+    Vec::new()
 }
 
 fn non_blocking_failure_signals(
@@ -878,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_strategy_memory_counts_when_kernel_is_absent() {
+    fn partial_strategy_memory_does_not_promote_user_prose() {
         let user = super::super::types::SessionBrainUserContext {
             brief: String::new(),
             overview:
@@ -890,8 +872,7 @@ mod tests {
 
         let summary = partial_strategy_from_user_context(&user);
 
-        assert_eq!(summary.len(), 1);
-        assert!(summary[0].contains("Business strategy"));
+        assert!(summary.is_empty());
     }
 
     #[test]
