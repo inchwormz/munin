@@ -1,5 +1,6 @@
 //! Minimal durable business-strategy kernel and scorecard support.
 use super::config::{context_data_dir, Config, StrategyScopeConfig};
+use super::constants::LEGACY_CONTEXT_DATA_DIR;
 use crate::core::memory_os::MemoryOsInspectionScope;
 use crate::core::tracking::Tracker;
 use anyhow::{anyhow, Context, Result};
@@ -615,66 +616,13 @@ pub fn default_strategy_scope_hint() -> String {
 
 pub fn discover_inspect_reports(limit: usize) -> Result<Vec<StrategyInspectReport>> {
     let config = Config::load().context("Failed to load config.toml")?;
-    let strategy_root = config
-        .strategy
-        .directory
-        .clone()
-        .unwrap_or(context_data_dir()?.join(STRATEGY_DIR));
-    let mut scope_dirs = BTreeMap::new();
-
-    for scope_name in config.strategy.scopes.keys() {
-        scope_dirs.insert(scope_name.clone(), strategy_root.join(scope_name));
-    }
-
-    if let Some(default_scope) = config.strategy.configured_scope_name(None) {
-        scope_dirs
-            .entry(default_scope.clone())
-            .or_insert_with(|| strategy_root.join(default_scope));
-    }
-
-    if strategy_root.exists() {
-        for entry in fs::read_dir(&strategy_root)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let scope_name = entry.file_name().to_string_lossy().to_string();
-            scope_dirs.entry(scope_name).or_insert_with(|| entry.path());
-        }
-    }
+    let scope_dirs = discover_strategy_storage_dirs(&config)?;
 
     let mut reports = Vec::new();
     for (scope_name, storage_dir) in scope_dirs {
-        let registry_path = storage_dir.join(STRATEGY_REGISTRY_FILE);
-        let kernel_path = storage_dir.join(STRATEGY_KERNEL_FILE);
-        if !registry_path.exists() || !kernel_path.exists() {
-            continue;
+        if let Some(report) = inspect_report_from_storage_dir(&scope_name, &storage_dir)? {
+            reports.push(report);
         }
-        let registry = match load_registry(&registry_path) {
-            Ok(registry) => registry,
-            Err(_) => continue,
-        };
-        let mut kernel = match load_kernel(&kernel_path) {
-            Ok(kernel) => kernel,
-            Err(_) => continue,
-        };
-        if strategy_kernel_is_empty(&kernel) && registry.artifact_path.exists() {
-            if let Ok(imported) =
-                import_strategy_kernel(&registry.scope_id, &registry.artifact_path)
-            {
-                kernel = imported;
-            }
-        }
-        reports.push(StrategyInspectReport {
-            generated_at: Utc::now().to_rfc3339(),
-            scope_id: if registry.scope_id.trim().is_empty() {
-                scope_name
-            } else {
-                registry.scope_id.clone()
-            },
-            registry,
-            kernel,
-        });
     }
 
     reports.sort_by(|left, right| {
@@ -1009,30 +957,54 @@ fn load_scope_bundle(
     let paths = if let Some((_, scope_config)) = config.strategy.scope(Some(&scope_name)) {
         resolve_store_paths(&config, &scope_name, scope_config)?
     } else {
-        let strategy_root = config
-            .strategy
-            .directory
-            .clone()
-            .unwrap_or(context_data_dir()?.join(STRATEGY_DIR));
-        let storage_dir = strategy_root.join(&scope_name);
-        if !storage_dir.exists() {
-            return Err(anyhow!(
-                "No strategy scope is configured for `{scope_name}`"
-            ));
+        match discovered_store_paths(&config, &scope_name)? {
+            Some(paths) => paths,
+            None => {
+                return Err(anyhow!(
+                    "No strategy scope is configured for `{scope_name}`"
+                ))
+            }
         }
-        let fallback_scope = StrategyScopeConfig {
-            storage_dir: Some(storage_dir),
-            ..StrategyScopeConfig::default()
-        };
-        resolve_store_paths(&config, &scope_name, &fallback_scope)?
     };
-    let registry = load_registry(&paths.registry_path)?;
-    let mut kernel = load_kernel(&paths.kernel_path)?;
-    if strategy_kernel_is_empty(&kernel) && registry.artifact_path.exists() {
-        kernel = import_strategy_kernel(&registry.scope_id, &registry.artifact_path)?;
-        save_kernel(&paths.kernel_path, &kernel)?;
+    let registry_path = paths.registry_path.clone();
+    let kernel_path = paths.kernel_path.clone();
+    if registry_path.exists() && kernel_path.exists() {
+        let registry = load_registry(&registry_path)?;
+        let mut kernel = load_kernel(&kernel_path)?;
+        if strategy_kernel_is_empty(&kernel) && registry.artifact_path.exists() {
+            kernel = import_strategy_kernel(&registry.scope_id, &registry.artifact_path)?;
+            save_kernel(&kernel_path, &kernel)?;
+        }
+        return Ok((paths, registry, kernel));
     }
-    Ok((paths, registry, kernel))
+
+    let report = inspect_report_from_storage_dir(&scope_name, &paths.storage_dir)?
+        .ok_or_else(|| anyhow!("No strategy scope is configured for `{scope_name}`"))?;
+    Ok((paths, report.registry, report.kernel))
+}
+
+fn discovered_store_paths(
+    config: &Config,
+    requested_scope: &str,
+) -> Result<Option<StrategyStorePaths>> {
+    for (scope_name, storage_dir) in discover_strategy_storage_dirs(config)? {
+        let report = match inspect_report_from_storage_dir(&scope_name, &storage_dir)? {
+            Some(report) => report,
+            None => continue,
+        };
+        if requested_scope == crate::core::config::DEFAULT_STRATEGY_SCOPE
+            || report.scope_id == requested_scope
+            || scope_name == requested_scope
+        {
+            return Ok(Some(StrategyStorePaths {
+                registry_path: storage_dir.join(STRATEGY_REGISTRY_FILE),
+                kernel_path: storage_dir.join(STRATEGY_KERNEL_FILE),
+                metrics_path: report.registry.metrics_path.clone(),
+                storage_dir,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn load_registry(path: &Path) -> Result<StrategySourceRegistry> {
@@ -1040,6 +1012,154 @@ fn load_registry(path: &Path) -> Result<StrategySourceRegistry> {
         .with_context(|| format!("Failed to read strategy registry {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse strategy registry {}", path.display()))
+}
+
+fn discover_strategy_storage_dirs(config: &Config) -> Result<BTreeMap<String, PathBuf>> {
+    let mut scope_dirs = BTreeMap::new();
+    for strategy_root in strategy_root_candidates(config)? {
+        scope_dirs.insert(
+            format!("__standalone:{}", strategy_root.display()),
+            strategy_root.clone(),
+        );
+
+        for scope_name in config.strategy.scopes.keys() {
+            scope_dirs
+                .entry(scope_name.clone())
+                .or_insert_with(|| strategy_root.join(scope_name));
+        }
+
+        if let Some(default_scope) = config.strategy.configured_scope_name(None) {
+            scope_dirs
+                .entry(default_scope.clone())
+                .or_insert_with(|| strategy_root.join(default_scope));
+        }
+
+        if strategy_root.exists() {
+            for entry in fs::read_dir(&strategy_root)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let scope_name = entry.file_name().to_string_lossy().to_string();
+                scope_dirs.entry(scope_name).or_insert_with(|| entry.path());
+            }
+        }
+    }
+    Ok(scope_dirs)
+}
+
+fn strategy_root_candidates(config: &Config) -> Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    if let Some(dir) = config.strategy.directory.clone() {
+        push_unique_path(&mut roots, dir);
+    }
+    push_unique_path(&mut roots, context_data_dir()?.join(STRATEGY_DIR));
+    if let Some(local_data) = dirs::data_local_dir() {
+        push_unique_path(
+            &mut roots,
+            local_data.join(LEGACY_CONTEXT_DATA_DIR).join(STRATEGY_DIR),
+        );
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            push_unique_path(&mut roots, ancestor.join(STRATEGY_DIR));
+        }
+    }
+    Ok(roots)
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    let key = normalize_strategy_path_key(&path);
+    if paths
+        .iter()
+        .any(|existing| normalize_strategy_path_key(existing) == key)
+    {
+        return;
+    }
+    paths.push(path);
+}
+
+fn normalize_strategy_path_key(path: &Path) -> String {
+    absolute_or_original(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn inspect_report_from_storage_dir(
+    scope_hint: &str,
+    storage_dir: &Path,
+) -> Result<Option<StrategyInspectReport>> {
+    let registry_path = storage_dir.join(STRATEGY_REGISTRY_FILE);
+    let kernel_path = storage_dir.join(STRATEGY_KERNEL_FILE);
+    if registry_path.exists() && kernel_path.exists() {
+        let registry = match load_registry(&registry_path) {
+            Ok(registry) => registry,
+            Err(_) => return Ok(None),
+        };
+        let mut kernel = match load_kernel(&kernel_path) {
+            Ok(kernel) => kernel,
+            Err(_) => return Ok(None),
+        };
+        if strategy_kernel_is_empty(&kernel) && registry.artifact_path.exists() {
+            if let Ok(imported) =
+                import_strategy_kernel(&registry.scope_id, &registry.artifact_path)
+            {
+                kernel = imported;
+            }
+        }
+        let scope_id = if registry.scope_id.trim().is_empty() {
+            scope_hint.to_string()
+        } else {
+            registry.scope_id.clone()
+        };
+        return Ok(Some(StrategyInspectReport {
+            generated_at: Utc::now().to_rfc3339(),
+            scope_id,
+            registry,
+            kernel,
+        }));
+    }
+
+    let artifact_path = storage_dir.join(STRATEGY_TEMPLATE_JSON_FILE);
+    if !artifact_path.exists() {
+        return Ok(None);
+    }
+    let scope_id = strategy_json_scope_id(&artifact_path)?
+        .filter(|scope| !scope.trim().is_empty())
+        .unwrap_or_else(|| scope_hint.trim_start_matches("__standalone:").to_string());
+    let kernel = import_strategy_kernel(&scope_id, &artifact_path)?;
+    let registry = StrategySourceRegistry {
+        schema_version: "strategy-registry-v1".to_string(),
+        scope_id: scope_id.clone(),
+        artifact_path: absolute_or_original(&artifact_path)?,
+        metrics_path: absolute_or_original(&storage_dir.join(STRATEGY_DEFAULT_METRICS_FILE))?,
+        continuity_project_path: None,
+        signal_paths: Vec::new(),
+        storage_dir: absolute_or_original(storage_dir)?,
+        bootstrap_requested: false,
+        template_managed: false,
+        imported_at: Utc::now().to_rfc3339(),
+    };
+    Ok(Some(StrategyInspectReport {
+        generated_at: Utc::now().to_rfc3339(),
+        scope_id,
+        registry,
+        kernel,
+    }))
+}
+
+fn strategy_json_scope_id(path: &Path) -> Result<Option<String>> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&content).context("Failed to parse strategy JSON sidecar")?;
+    Ok(parsed
+        .get("organization")
+        .and_then(|value| value.get("scope_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string))
 }
 
 fn save_registry(path: &Path, registry: &StrategySourceRegistry) -> Result<()> {
