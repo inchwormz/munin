@@ -29,11 +29,12 @@ fn build_default_user_context(tracker: &Tracker) -> SessionBrainUserContext {
     let scope = MemoryOsInspectionScope::User;
     let overview = tracker.get_memory_os_overview_report(scope, None).ok();
     let profile = tracker.get_memory_os_profile_report(scope, None).ok();
+    let friction = tracker.get_memory_os_friction_report(scope, None).ok();
     let context = SessionBrainUserContext {
         brief: build_brief_line(overview.as_ref(), profile.as_ref()),
         overview: build_overview_line(overview.as_ref(), profile.as_ref()),
         profile: build_profile_line(profile.as_ref()),
-        friction: String::new(),
+        friction: build_friction_line(friction.as_ref()),
     };
     if user_context_has_content(&context) {
         context
@@ -137,11 +138,18 @@ fn build_friction_line(friction: Option<&MemoryOsFrictionReport>) -> String {
         return String::new();
     };
     let mut parts = friction
-        .behavior_changes
+        .new_unproven_friction
         .iter()
         .take(2)
-        .map(|change| format!("{}: {}", change.target_agent, change.change))
+        .map(|fix| format!("{}: {}", fix.title, fix.permanent_fix))
         .collect::<Vec<_>>();
+    parts.extend(
+        friction
+            .behavior_changes
+            .iter()
+            .take(2)
+            .map(|change| format!("{}: {}", change.target_agent, change.change)),
+    );
     if parts.is_empty() {
         parts.extend(
             friction
@@ -161,4 +169,46 @@ fn finding_to_line(finding: &MemoryOsNarrativeFinding) -> String {
 fn dedupe_lines(items: &mut Vec<String>) {
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.to_ascii_lowercase()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_friction_report() -> MemoryOsFrictionReport {
+        MemoryOsFrictionReport {
+            generated_at: "2026-04-22T00:00:00Z".to_string(),
+            scope: MemoryOsInspectionScope::User,
+            top_fixes: Vec::new(),
+            new_unproven_friction: Vec::new(),
+            by_source: Vec::new(),
+            redirects: crate::core::memory_os::MemoryOsRedirectSummary::default(),
+            repeated_corrections: Vec::new(),
+            likely_misunderstandings: Vec::new(),
+            behavior_changes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn friction_line_includes_new_unproven_context_reversal_guard() {
+        let mut report = empty_friction_report();
+        report.new_unproven_friction.push(crate::core::memory_os::MemoryOsFrictionFix {
+            fix_id: "friction:new-unproven:clarify-context-reversal".to_string(),
+            title: "Clarify before reversing direction on likely wrong-terminal context slips"
+                .to_string(),
+            impact: "high".to_string(),
+            status: "monitoring".to_string(),
+            summary: "User corrected a likely wrong-terminal/context-slip interpretation 1 time(s).".to_string(),
+            permanent_fix:
+                "When a user message reverses the current task framing or sounds like it may belong to another terminal, ask one concise clarifying question before editing."
+                    .to_string(),
+            evidence: vec!["user correction at 2026-04-21T18:03:06Z".to_string()],
+            score: 91,
+        });
+
+        let line = build_friction_line(Some(&report));
+
+        assert!(line.contains("Clarify before reversing direction"));
+        assert!(line.contains("ask one concise clarifying question"));
+    }
 }
