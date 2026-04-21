@@ -501,7 +501,7 @@ pub fn setup(options: &StrategySetupOptions) -> Result<StrategySetupReport> {
             ));
         } else {
             next_step_hint = Some(format!(
-                "Templates created at `{}` and `{}`. Fill them with real strategy content and re-run `context strategy setup --scope {} --import {}` using the JSON sidecar.",
+                "Templates created at `{}` and `{}`. Fill them with real strategy content and re-run `munin strategy setup --scope {} --import {}` using the JSON sidecar.",
                 markdown_path.display(),
                 json_path.display(),
                 scope_id,
@@ -516,7 +516,7 @@ pub fn setup(options: &StrategySetupOptions) -> Result<StrategySetupReport> {
             .or_else(|| scope_config.artifact_path.clone())
             .ok_or_else(|| anyhow!("No staged strategy artifact is configured for `{scope_id}`"))?;
         next_step_hint = Some(format!(
-            "A staged strategy artifact already exists at `{}`. Populate the markdown companion and JSON sidecar with real strategy content, then re-run `context strategy setup --scope {} --import {}` using the JSON sidecar.",
+            "A staged strategy artifact already exists at `{}`. Populate the markdown companion and JSON sidecar with real strategy content, then re-run `munin strategy setup --scope {} --import {}` using the JSON sidecar.",
             staged_path.display(),
             scope_id,
             staged_path.display()
@@ -2464,8 +2464,8 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let config_dir = temp.path().join("config");
         let data_dir = temp.path().join("data");
-        std::env::set_var("CONTEXT_CONFIG_DIR", &config_dir);
-        std::env::set_var("CONTEXT_DATA_DIR_PATH", &data_dir);
+        std::env::set_var("MUNIN_CONFIG_DIR", &config_dir);
+        std::env::set_var("MUNIN_DATA_DIR", &data_dir);
 
         let mut config = crate::core::config::Config::default();
         config.strategy.default_scope = Some("sitesorted-business".to_string());
@@ -2536,8 +2536,8 @@ mod tests {
             .iter()
             .any(|warning| warning.contains("no current values")));
 
-        std::env::remove_var("CONTEXT_CONFIG_DIR");
-        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
+        std::env::remove_var("MUNIN_CONFIG_DIR");
+        std::env::remove_var("MUNIN_DATA_DIR");
     }
 
     #[test]
@@ -2546,8 +2546,8 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let config_dir = temp.path().join("config");
         let data_dir = temp.path().join("data");
-        std::env::set_var("CONTEXT_CONFIG_DIR", &config_dir);
-        std::env::set_var("CONTEXT_DATA_DIR_PATH", &data_dir);
+        std::env::set_var("MUNIN_CONFIG_DIR", &config_dir);
+        std::env::set_var("MUNIN_DATA_DIR", &data_dir);
 
         let mut config = crate::core::config::Config::default();
         config.strategy.default_scope = Some("sitesorted-business".to_string());
@@ -2600,8 +2600,8 @@ mod tests {
             .iter()
             .any(|warning| warning.contains("ingested strategy KPI definitions")));
 
-        std::env::remove_var("CONTEXT_CONFIG_DIR");
-        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
+        std::env::remove_var("MUNIN_CONFIG_DIR");
+        std::env::remove_var("MUNIN_DATA_DIR");
     }
 
     #[test]
@@ -2612,9 +2612,9 @@ mod tests {
         let data_dir = temp.path().join("data");
         let db_path = temp.path().join("history.db");
 
-        std::env::set_var("CONTEXT_CONFIG_DIR", &config_dir);
-        std::env::set_var("CONTEXT_DATA_DIR_PATH", &data_dir);
-        std::env::set_var("CONTEXT_DB_PATH", &db_path);
+        std::env::set_var("MUNIN_CONFIG_DIR", &config_dir);
+        std::env::set_var("MUNIN_DATA_DIR", &data_dir);
+        std::env::set_var("MUNIN_DB_PATH", &db_path);
 
         let report = setup(&StrategySetupOptions {
             scope: DEFAULT_STRATEGY_SCOPE.to_string(),
@@ -2632,9 +2632,9 @@ mod tests {
         assert!(kernel.kpis.is_empty());
         assert!(kernel.sources.is_empty());
 
-        std::env::remove_var("CONTEXT_CONFIG_DIR");
-        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
-        std::env::remove_var("CONTEXT_DB_PATH");
+        std::env::remove_var("MUNIN_CONFIG_DIR");
+        std::env::remove_var("MUNIN_DATA_DIR");
+        std::env::remove_var("MUNIN_DB_PATH");
     }
 
     #[test]
@@ -2645,9 +2645,9 @@ mod tests {
         let data_dir = temp.path().join("data");
         let db_path = temp.path().join("history.db");
 
-        std::env::set_var("CONTEXT_CONFIG_DIR", &config_dir);
-        std::env::set_var("CONTEXT_DATA_DIR_PATH", &data_dir);
-        std::env::set_var("CONTEXT_DB_PATH", &db_path);
+        std::env::set_var("MUNIN_CONFIG_DIR", &config_dir);
+        std::env::set_var("MUNIN_DATA_DIR", &data_dir);
+        std::env::set_var("MUNIN_DB_PATH", &db_path);
 
         setup(&StrategySetupOptions {
             scope: DEFAULT_STRATEGY_SCOPE.to_string(),
@@ -2671,8 +2671,8 @@ mod tests {
         assert!(kernel.goals.is_empty());
         assert!(kernel.sources.is_empty());
 
-        std::env::remove_var("CONTEXT_CONFIG_DIR");
-        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
-        std::env::remove_var("CONTEXT_DB_PATH");
+        std::env::remove_var("MUNIN_CONFIG_DIR");
+        std::env::remove_var("MUNIN_DATA_DIR");
+        std::env::remove_var("MUNIN_DB_PATH");
     }
 }

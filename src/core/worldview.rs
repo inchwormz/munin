@@ -264,7 +264,7 @@ pub fn observe_diff(
     record_worldview(
         "diff",
         &format!("diff:{}->{}", left, right),
-        "context diff",
+        "munin diff",
         &summary,
         fingerprint_source,
         artifact.artifact_id.as_deref(),
@@ -1033,9 +1033,9 @@ fn collect_artifacts(
         if let Some(artifact_id) = &fact.artifact_id {
             if seen.insert(artifact_id.clone()) {
                 let reopen_hint = if fact.event_type == "diff" {
-                    format!("context diff {artifact_id} <other-artifact>")
+                    format!("munin diff {artifact_id} <other-artifact>")
                 } else {
-                    format!("context show {artifact_id}")
+                    format!("munin show {artifact_id}")
                 };
                 handles.push(ArtifactHandle {
                     artifact_id: artifact_id.clone(),
@@ -1047,12 +1047,12 @@ fn collect_artifacts(
 
     for claim in live_claims.iter().chain(open_obligations.iter()) {
         for evidence in &claim.evidence {
-            if !evidence.starts_with("@context/") || !seen.insert(evidence.clone()) {
+            if !crate::core::artifacts::is_artifact_id(evidence) || !seen.insert(evidence.clone()) {
                 continue;
             }
             handles.push(ArtifactHandle {
                 artifact_id: evidence.clone(),
-                reopen_hint: format!("context show {}", evidence),
+                reopen_hint: format!("munin show {}", evidence),
             });
         }
     }

@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use munin_memory::{analytics, core, proactivity_cmd, session_brain, strategy_cmd};
+use munin_memory::{
+    analytics, core, proactivity_cmd, runtime_context, session_brain, strategy_cmd,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -36,6 +38,19 @@ enum Commands {
 
     /// Startup brain for the current session and project
     Brain {
+        /// Output format
+        #[arg(short, long, default_value = "prompt")]
+        format: String,
+    },
+
+    /// Unified runtime context packet for Claude/Codex integration assets
+    Runtime {
+        /// Which continuity surface to build
+        #[arg(long, default_value = "auto")]
+        surface: String,
+        /// Inspection scope for resume-style packets
+        #[arg(long, default_value = "user")]
+        scope: String,
         /// Output format
         #[arg(short, long, default_value = "prompt")]
         format: String,
@@ -92,6 +107,23 @@ enum Commands {
         /// Output format
         #[arg(short, long, default_value = "text")]
         format: String,
+    },
+
+    /// Show a stored Munin artifact by id
+    Show {
+        /// Artifact id such as @munin/a_deadbeefdeadbeef
+        artifact_id: String,
+        /// Optional line slice such as 1:80
+        #[arg(long)]
+        lines: Option<String>,
+    },
+
+    /// Show a simple diff between two stored Munin artifacts
+    Diff {
+        /// Left artifact id
+        left_artifact_id: String,
+        /// Right artifact id
+        right_artifact_id: String,
     },
 
     /// Install Munin skills/plugin assets for Claude and Codex
@@ -527,11 +559,38 @@ fn run_cli() -> Result<i32> {
     let cli = Cli::parse();
     let code = match cli.command {
         Commands::Resume { scope, format } => {
-            analytics::memory_os_cmd::run_brief(&scope, None, &format, false, cli.verbose)?;
+            analytics::memory_os_cmd::run_startup_brief(&scope, None, &format, cli.verbose)?;
             0
         }
         Commands::Brain { format } => {
             session_brain::run_inspect_current(&format, cli.verbose)?;
+            0
+        }
+        Commands::Runtime {
+            surface,
+            scope,
+            format,
+        } => {
+            let mode = runtime_context::RuntimeContextRenderMode::parse(&format)?;
+            let packet = match surface.as_str() {
+                "auto" => {
+                    let brain = runtime_context::build_current_brain_packet()?;
+                    if brain.meta.source_mode == runtime_context::RuntimeContextSourceMode::Live {
+                        brain
+                    } else {
+                        runtime_context::build_current_resume_packet(&scope)?
+                    }
+                }
+                "brain" => runtime_context::build_current_brain_packet()?,
+                "resume" => runtime_context::build_current_resume_packet(&scope)?,
+                other => {
+                    anyhow::bail!(
+                        "unsupported surface '{}' (expected auto, brain, or resume)",
+                        other
+                    )
+                }
+            };
+            println!("{}", runtime_context::render_packet(&packet, mode)?);
             0
         }
         Commands::Nudge { scope, format } => {
@@ -575,6 +634,25 @@ fn run_cli() -> Result<i32> {
                 &format,
                 cli.verbose,
             )?;
+            0
+        }
+        Commands::Show { artifact_id, lines } => {
+            println!(
+                "{}",
+                core::artifacts::show_artifact(&artifact_id, lines.as_deref())?
+            );
+            0
+        }
+        Commands::Diff {
+            left_artifact_id,
+            right_artifact_id,
+        } => {
+            let left = core::artifacts::load_artifact_text(&left_artifact_id)?;
+            let right = core::artifacts::load_artifact_text(&right_artifact_id)?;
+            println!(
+                "{}",
+                render_artifact_diff(&left_artifact_id, &right_artifact_id, &left, &right)
+            );
             0
         }
         Commands::Install {
@@ -697,6 +775,35 @@ fn render_json_or_text<T: Serialize>(
         other => anyhow::bail!("unsupported format `{other}`; expected text or json"),
     }
     Ok(())
+}
+
+fn render_artifact_diff(left_id: &str, right_id: &str, left: &str, right: &str) -> String {
+    let left_lines = left.lines().collect::<Vec<_>>();
+    let right_lines = right.lines().collect::<Vec<_>>();
+    let removed = left_lines
+        .iter()
+        .filter(|line| !right_lines.contains(line))
+        .take(40)
+        .map(|line| format!("- {}", line))
+        .collect::<Vec<_>>();
+    let added = right_lines
+        .iter()
+        .filter(|line| !left_lines.contains(line))
+        .take(40)
+        .map(|line| format!("+ {}", line))
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        format!("Munin artifact diff"),
+        format!("left: {left_id}"),
+        format!("right: {right_id}"),
+    ];
+    if removed.is_empty() && added.is_empty() {
+        lines.push("No line-level differences found.".to_string());
+    } else {
+        lines.extend(removed);
+        lines.extend(added);
+    }
+    lines.join("\n")
 }
 
 fn render_resolve_report(report: &core::resolver::ResolveReport, format: &str) -> Result<()> {
@@ -1290,6 +1397,7 @@ fn run_install(options: InstallOptions) -> Result<()> {
         )?;
         let command_root = home.join(".claude").join("commands");
         writes += install_claude_commands_at(&command_root, options.force, options.dry_run)?;
+        writes += install_claude_runtime_assets(&home, options.force, options.dry_run)?;
     }
     if install_codex {
         let skill_root = home.join(".codex").join("skills");
@@ -1340,6 +1448,7 @@ fn install_home_dir() -> Result<PathBuf> {
 
 fn run_check_resolvable() -> Result<()> {
     let mut checked = 0usize;
+    checked += validate_integration_asset_bundle()?;
     for skill in INSTALL_QUICK_SKILLS {
         validate_munin_command(skill.primary_command).with_context(|| {
             format!(
@@ -1492,39 +1601,56 @@ struct ResolverTriggerFixture {
     negative_triggers: Vec<String>,
 }
 
-fn validate_resolver_trigger_fixtures() -> Result<usize> {
-    let fixture_dir = Path::new("tests")
-        .join("fixtures")
-        .join("resolver_triggers");
-    if !fixture_dir.exists() {
-        anyhow::bail!(
-            "resolver trigger fixture directory missing: {}",
-            fixture_dir.display()
-        );
-    }
+const RESOLVER_TRIGGER_FIXTURES: &[(&str, &str)] = &[
+    (
+        "brain.json",
+        include_str!("../../tests/fixtures/resolver_triggers/brain.json"),
+    ),
+    (
+        "doctor.json",
+        include_str!("../../tests/fixtures/resolver_triggers/doctor.json"),
+    ),
+    (
+        "friction.json",
+        include_str!("../../tests/fixtures/resolver_triggers/friction.json"),
+    ),
+    (
+        "hygiene.json",
+        include_str!("../../tests/fixtures/resolver_triggers/hygiene.json"),
+    ),
+    (
+        "nudge.json",
+        include_str!("../../tests/fixtures/resolver_triggers/nudge.json"),
+    ),
+    (
+        "prove.json",
+        include_str!("../../tests/fixtures/resolver_triggers/prove.json"),
+    ),
+    (
+        "recall.json",
+        include_str!("../../tests/fixtures/resolver_triggers/recall.json"),
+    ),
+    (
+        "resume.json",
+        include_str!("../../tests/fixtures/resolver_triggers/resume.json"),
+    ),
+];
 
+fn validate_resolver_trigger_fixtures() -> Result<usize> {
     let mut checked = 0usize;
     let mut fixture_routes = std::collections::BTreeSet::new();
-    for entry in fs::read_dir(&fixture_dir)
-        .with_context(|| format!("failed to read {}", fixture_dir.display()))?
-    {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read fixture {}", path.display()))?;
+    for (fixture_name, content) in RESOLVER_TRIGGER_FIXTURES {
         let fixture: ResolverTriggerFixture = serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse fixture {}", path.display()))?;
+            .with_context(|| format!("failed to parse fixture {}", fixture_name))?;
         let rule = core::access_layer::intent_rules::INTENT_RULES
             .iter()
             .find(|rule| rule.route == fixture.route)
-            .with_context(|| format!("fixture {} does not match an intent rule", path.display()))?;
+            .with_context(|| format!("fixture {} does not match an intent rule", fixture_name))?;
         fixture_routes.insert(fixture.route.clone());
         if fixture.triggers.len() < 5 || fixture.negative_triggers.len() < 2 {
             anyhow::bail!(
                 "fixture {} needs at least five positive and two negative triggers",
-                path.display()
+                fixture_name
             );
         }
         for query in fixture.triggers {
@@ -1535,7 +1661,7 @@ fn validate_resolver_trigger_fixtures() -> Result<usize> {
             if report.route != fixture.route {
                 anyhow::bail!(
                     "fixture {} trigger `{}` routed to `{}` instead of `{}`",
-                    path.display(),
+                    fixture_name,
                     query,
                     report.route,
                     fixture.route
@@ -1543,7 +1669,7 @@ fn validate_resolver_trigger_fixtures() -> Result<usize> {
             }
             if report.command.starts_with("munin ") {
                 validate_munin_command(&report.command).with_context(|| {
-                    format!("fixture {} command is not resolvable", path.display())
+                    format!("fixture {} command is not resolvable", fixture_name)
                 })?;
             }
             checked += 1;
@@ -1556,7 +1682,7 @@ fn validate_resolver_trigger_fixtures() -> Result<usize> {
             if report.route == fixture.route {
                 anyhow::bail!(
                     "fixture {} negative trigger `{}` unexpectedly routed to `{}`",
-                    path.display(),
+                    fixture_name,
                     query,
                     fixture.route
                 );
@@ -1685,6 +1811,136 @@ fn install_claude_commands_at(root: &Path, force: bool, dry_run: bool) -> Result
     Ok(writes)
 }
 
+fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Result<usize> {
+    let mut writes = 0usize;
+    let hook_path = home.join(".claude").join("hooks").join("munin-runtime.js");
+    let hook_body = include_str!("../assets/integrations/v1/claude/munin-runtime.js");
+    if write_installer_file(&hook_path, hook_body, force, dry_run)? {
+        writes += 1;
+        println!("Claude hook: {}", hook_path.display());
+    }
+
+    let settings_path = home.join(".claude").join("settings.json");
+    let command = format!("node {}", normalize_command_path(&hook_path));
+    let mut settings = if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .with_context(|| format!("failed to read {}", settings_path.display()))?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .with_context(|| format!("failed to parse {}", settings_path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+
+    if upsert_claude_user_prompt_hook(&mut settings, &command) {
+        writes += 1;
+        if dry_run {
+            println!("would update Claude settings: {}", settings_path.display());
+        } else {
+            if let Some(parent) = settings_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
+                .with_context(|| format!("failed to write {}", settings_path.display()))?;
+            println!("Claude settings: {}", settings_path.display());
+        }
+    }
+
+    Ok(writes)
+}
+
+fn normalize_command_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn upsert_claude_user_prompt_hook(settings: &mut serde_json::Value, command: &str) -> bool {
+    if !settings.is_object() {
+        *settings = serde_json::json!({});
+    }
+    let root = settings
+        .as_object_mut()
+        .expect("object after normalization");
+    let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
+    if !hooks.is_object() {
+        *hooks = serde_json::json!({});
+    }
+    let hooks_obj = hooks.as_object_mut().expect("hooks object");
+    let entries = hooks_obj
+        .entry("UserPromptSubmit")
+        .or_insert_with(|| serde_json::json!([{ "hooks": [] }]));
+    if !entries.is_array() {
+        *entries = serde_json::json!([]);
+    }
+    let entries_array = entries.as_array_mut().expect("entries array");
+    let mut changed = prune_legacy_context_user_prompt_hooks(entries_array);
+    if !entries_array.iter().any(entry_contains_munin_prompt_hook) {
+        entries_array.insert(
+            0,
+            serde_json::json!({
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": command,
+                        "timeout": 6000
+                    }
+                ]
+            }),
+        );
+        changed = true;
+    }
+    changed
+}
+
+fn entry_contains_munin_prompt_hook(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|value| value.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|value| value.as_str())
+                    .map(|existing| existing.contains("munin-runtime.js"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn prune_legacy_context_user_prompt_hooks(entries: &mut Vec<serde_json::Value>) -> bool {
+    let before = serde_json::Value::Array(entries.clone());
+    let mut retained_entries = Vec::with_capacity(entries.len());
+
+    for mut entry in entries.drain(..) {
+        let Some(hooks) = entry
+            .get_mut("hooks")
+            .and_then(|value| value.as_array_mut())
+        else {
+            retained_entries.push(entry);
+            continue;
+        };
+
+        hooks.retain(|hook| {
+            hook.get("command")
+                .and_then(|value| value.as_str())
+                .map(|command| !is_legacy_context_prompt_hook_command(command))
+                .unwrap_or(true)
+        });
+
+        if !hooks.is_empty() {
+            retained_entries.push(entry);
+        }
+    }
+
+    *entries = retained_entries;
+    before != serde_json::Value::Array(entries.clone())
+}
+
+fn is_legacy_context_prompt_hook_command(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+    basename.starts_with("context-") && basename.ends_with(".js")
+}
+
 fn archive_legacy_skills(root: &Path, force: bool, dry_run: bool, label: &str) -> Result<usize> {
     let archive_root = root.join(".munin-legacy");
     let mut archived = 0usize;
@@ -1744,7 +2000,8 @@ fn archive_legacy_skills(root: &Path, force: bool, dry_run: bool, label: &str) -
 fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Result<usize> {
     let mut writes = 0usize;
     let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
-    if write_installer_file(&manifest_path, CODEX_PLUGIN_JSON, force, dry_run)? {
+    let plugin_manifest = render_codex_plugin_json();
+    if write_installer_file(&manifest_path, &plugin_manifest, force, dry_run)? {
         writes += 1;
         println!("Codex plugin: {}", manifest_path.display());
     }
@@ -1819,51 +2076,75 @@ fn render_umbrella_skill() -> String {
         .map(|rule| rule.route)
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Flow\n0. If the user only invoked Munin with no substantive ask, stop and ask what they want Munin to check. Do not run recall, doctor, proactivity, or any status command for a bare invocation.\n1. Run `munin resolve --format text \"<user ask>\"`.\n2. Run the returned command.\n3. Follow the matching narrow skill's Trust, Fallback, What not to do, and Done rules.\n\n## Resolver output\nRoutes: {}.\n\nLive-session continuity routes to `brain` only when Session Brain is live. Fallback or stale continuity routes to `resume`.\n\n## Trust\n- Trust the route unless the user clearly asked for a different narrow surface.\n- If route is `recall` and the command returns zero topic matches, do not silently fall back to overview.\n- If route is `brain`, check the freshness label before saying anything is current.\n\n## Fallback\n- If the route looks wrong, ask `munin resolve` with the user's exact words and compare the route to the narrow skill descriptions.\n- If the command fails to parse, run `munin install --check-resolvable` before using installed skills.\n\n## Done\nThe user has a compiled answer from the chosen Munin surface, not a raw transcript dump.\n",
-        umbrella.name, umbrella.description, umbrella.name, umbrella.description_expanded, routes
+    render_template(
+        include_str!("../assets/integrations/v1/templates/umbrella-skill.md.tmpl"),
+        &[
+            ("__NAME__", umbrella.name.to_string()),
+            ("__DESCRIPTION__", umbrella.description.to_string()),
+            (
+                "__DESCRIPTION_EXPANDED__",
+                umbrella.description_expanded.to_string(),
+            ),
+            ("__ROUTES__", routes),
+        ],
     )
 }
 
 fn render_install_quick_skill(skill: &InstallQuickSkill) -> String {
-    format!(
-        "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Primary command\n\n```powershell\n{}\n```\n\n## How to read output\n{}\n\n## Trust\n- Treat this as an installer demonstration skill, not a memory read surface.\n- Do not change unrelated user data while running it.\n- If this is a fresh-install recording, set `MUNIN_INSTALL_HOME` to the intended demo profile before running it.\n\n## Done\n{}\n",
-        skill.name,
-        skill.description,
-        skill.name,
-        skill.when_to_use,
-        skill.primary_command,
-        skill.how_to_read_output,
-        skill.done
+    render_template(
+        include_str!("../assets/integrations/v1/templates/install-quick-skill.md.tmpl"),
+        &[
+            ("__NAME__", skill.name.to_string()),
+            ("__DESCRIPTION__", skill.description.to_string()),
+            ("__WHEN_TO_USE__", skill.when_to_use.to_string()),
+            ("__PRIMARY_COMMAND__", skill.primary_command.to_string()),
+            (
+                "__HOW_TO_READ_OUTPUT__",
+                skill.how_to_read_output.to_string(),
+            ),
+            ("__DONE__", skill.done.to_string()),
+        ],
     )
 }
 
 fn render_claude_umbrella_command() -> String {
     let umbrella = core::access_layer::intent_rules::UMBRELLA_SKILL;
-    format!(
-        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If the user provided arguments, pass them through: $ARGUMENTS\n",
-        umbrella.description, umbrella.name
+    render_template(
+        include_str!("../assets/integrations/v1/templates/claude-umbrella-command.md.tmpl"),
+        &[
+            ("__DESCRIPTION__", umbrella.description.to_string()),
+            ("__NAME__", umbrella.name.to_string()),
+        ],
     )
 }
 
 fn render_claude_narrow_command(rule: &core::access_layer::intent_rules::IntentRule) -> String {
-    format!(
-        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If the user provided arguments, use them as the request context: $ARGUMENTS\n",
-        rule.description, rule.skill_name
+    render_template(
+        include_str!("../assets/integrations/v1/templates/claude-narrow-command.md.tmpl"),
+        &[
+            ("__DESCRIPTION__", rule.description.to_string()),
+            ("__NAME__", rule.skill_name.to_string()),
+        ],
     )
 }
 
 fn render_claude_install_quick_command(skill: &InstallQuickSkill) -> String {
-    format!(
-        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If this is a recording or fresh-install demo, keep the output concise and preserve the command timing/counts. Arguments: $ARGUMENTS\n",
-        skill.description, skill.name
+    render_template(
+        include_str!("../assets/integrations/v1/templates/claude-install-quick-command.md.tmpl"),
+        &[
+            ("__DESCRIPTION__", skill.description.to_string()),
+            ("__NAME__", skill.name.to_string()),
+        ],
     )
 }
 
 fn render_claude_install_prose_command(skill: &InstallProseSkill) -> String {
-    format!(
-        "---\ndescription: {}\ndisable-model-invocation: true\n---\nInvoke the `{}` skill and follow it exactly. If the user provided arguments, use them as the request context: $ARGUMENTS\n",
-        skill.description, skill.name
+    render_template(
+        include_str!("../assets/integrations/v1/templates/claude-install-prose-command.md.tmpl"),
+        &[
+            ("__DESCRIPTION__", skill.description.to_string()),
+            ("__NAME__", skill.name.to_string()),
+        ],
     )
 }
 
@@ -1877,19 +2158,23 @@ fn render_narrow_skill(rule: &core::access_layer::intent_rules::IntentRule) -> S
             )
         })
         .unwrap_or_default();
-    format!(
-        "---\nname: {}\ndescription: {}\n---\n# {}\n\n## When to use\n{}\n\n## Primary command\n\n```powershell\n{}\n```\n{}\n\n## How to read output\n{}\n\n## Trust\n{}\n\n## Fallback\n- If output is empty, stale, or generic, do not invent an answer.\n{}\n- If unsure this is the right skill, run `munin resolve \"<ask>\"` and follow its route.\n\n## What not to do\n{}\n\n## Done\nYou're done when the answer:\n{}\n",
-        rule.skill_name,
-        rule.description,
-        rule.skill_name,
-        rule.description_expanded,
-        rule.primary_command,
-        fallback_command,
-        render_bullets(rule.output_contract),
-        render_bullets(rule.trust_rules),
-        render_bullets(rule.fallback_rules),
-        render_bullets(rule.what_not_to_do),
-        render_bullets(rule.done_criteria)
+    render_template(
+        include_str!("../assets/integrations/v1/templates/narrow-skill.md.tmpl"),
+        &[
+            ("__SKILL_NAME__", rule.skill_name.to_string()),
+            ("__DESCRIPTION__", rule.description.to_string()),
+            (
+                "__DESCRIPTION_EXPANDED__",
+                rule.description_expanded.to_string(),
+            ),
+            ("__PRIMARY_COMMAND__", rule.primary_command.to_string()),
+            ("__FALLBACK_BLOCK__", fallback_command),
+            ("__OUTPUT_CONTRACT__", render_bullets(rule.output_contract)),
+            ("__TRUST_RULES__", render_bullets(rule.trust_rules)),
+            ("__FALLBACK_RULES__", render_bullets(rule.fallback_rules)),
+            ("__WHAT_NOT_TO_DO__", render_bullets(rule.what_not_to_do)),
+            ("__DONE_CRITERIA__", render_bullets(rule.done_criteria)),
+        ],
     )
 }
 
@@ -1901,16 +2186,120 @@ fn render_bullets(items: &[&str]) -> String {
         .join("\n")
 }
 
-const CODEX_PLUGIN_JSON: &str = r#"{
-  "name": "munin-memory",
-  "version": "0.5.1",
-  "description": "Munin local memory surfaces for Codex.",
-  "interface": {
-    "displayName": "Munin Memory",
-    "shortDescription": "Local memory, friction, nudges, and proof for agentic coding."
-  }
+fn render_template(template: &str, replacements: &[(&str, String)]) -> String {
+    let mut rendered = template.to_string();
+    for (needle, value) in replacements {
+        rendered = rendered.replace(needle, value);
+    }
+    rendered
 }
-"#;
+
+fn render_codex_plugin_json() -> String {
+    include_str!("../assets/integrations/v1/codex/plugin.json.tmpl")
+        .replace("__MUNIN_VERSION__", env!("CARGO_PKG_VERSION"))
+}
+
+fn validate_integration_asset_bundle() -> Result<usize> {
+    let manifest_text = include_str!("../assets/integrations/v1/manifest.json");
+    let manifest: serde_json::Value = serde_json::from_str(manifest_text)
+        .context("failed to parse integration asset manifest")?;
+    let assets = manifest
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| anyhow::anyhow!("integration asset manifest is missing an assets array"))?;
+    if assets.is_empty() {
+        anyhow::bail!("integration asset manifest is missing bundle entries");
+    }
+    for asset in assets {
+        let path = asset
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("integration asset manifest entry is missing path"))?;
+        let content = integration_asset_content(path).ok_or_else(|| {
+            anyhow::anyhow!("integration asset manifest references unknown asset `{path}`")
+        })?;
+        if contains_forbidden_context_runtime_reference(content) {
+            anyhow::bail!("integration asset `{path}` still contains a Context runtime command");
+        }
+    }
+
+    let plugin_text = render_codex_plugin_json();
+    let plugin_json: serde_json::Value = serde_json::from_str(&plugin_text)
+        .context("failed to parse rendered codex plugin manifest")?;
+    let version = plugin_json
+        .get("version")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("rendered codex plugin manifest is missing a version"))?;
+    if version != env!("CARGO_PKG_VERSION") {
+        anyhow::bail!(
+            "rendered codex plugin manifest version `{version}` does not match crate version `{}`",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    if contains_forbidden_context_runtime_reference(&plugin_text) {
+        anyhow::bail!("rendered codex plugin manifest still contains a Context runtime reference");
+    }
+    let claude_hook = include_str!("../assets/integrations/v1/claude/munin-runtime.js");
+    if !claude_hook.contains("'runtime'") || !claude_hook.contains("'--surface', 'auto'") {
+        anyhow::bail!("Claude runtime hook does not invoke the Munin runtime contract");
+    }
+    if contains_forbidden_context_runtime_reference(claude_hook) {
+        anyhow::bail!("Claude runtime hook still contains a Context runtime reference");
+    }
+
+    Ok(assets.len() + 2)
+}
+
+fn integration_asset_content(path: &str) -> Option<&'static str> {
+    match path {
+        "templates/umbrella-skill.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/umbrella-skill.md.tmpl"
+        )),
+        "templates/narrow-skill.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/narrow-skill.md.tmpl"
+        )),
+        "templates/install-quick-skill.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/install-quick-skill.md.tmpl"
+        )),
+        "templates/claude-umbrella-command.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/claude-umbrella-command.md.tmpl"
+        )),
+        "templates/claude-narrow-command.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/claude-narrow-command.md.tmpl"
+        )),
+        "templates/claude-install-quick-command.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/claude-install-quick-command.md.tmpl"
+        )),
+        "templates/claude-install-prose-command.md.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/templates/claude-install-prose-command.md.tmpl"
+        )),
+        "claude/munin-runtime.js" => Some(include_str!(
+            "../assets/integrations/v1/claude/munin-runtime.js"
+        )),
+        "codex/plugin.json.tmpl" => Some(include_str!(
+            "../assets/integrations/v1/codex/plugin.json.tmpl"
+        )),
+        _ => None,
+    }
+}
+
+fn contains_forbidden_context_runtime_reference(content: &str) -> bool {
+    [
+        "spawnSync('context'",
+        "spawnSync(\"context\"",
+        "`context ",
+        "context session-brain",
+        "context memory-os",
+        "context strategy",
+        "context pack",
+        "context resume",
+        "context context",
+        "context show",
+        "context diff",
+    ]
+    .iter()
+    .any(|needle| content.contains(needle))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1924,11 +2313,51 @@ mod tests {
     fn public_munin_commands_parse() {
         parse_ok(&["munin", "resume", "--format", "prompt"]);
         parse_ok(&["munin", "brain", "--format", "prompt"]);
+        parse_ok(&[
+            "munin",
+            "runtime",
+            "--surface",
+            "brain",
+            "--format",
+            "prompt",
+        ]);
+        parse_ok(&[
+            "munin",
+            "runtime",
+            "--surface",
+            "auto",
+            "--format",
+            "prompt",
+        ]);
+        parse_ok(&[
+            "munin",
+            "runtime",
+            "--surface",
+            "resume",
+            "--scope",
+            "user",
+            "--format",
+            "json",
+        ]);
         parse_ok(&["munin", "nudge", "--scope", "sitesorted-business"]);
         parse_ok(&["munin", "prove", "--last-resume"]);
         parse_ok(&["munin", "friction", "--agent", "codex", "--last", "30d"]);
         parse_ok(&["munin", "promote", "use bun, not npm"]);
         parse_ok(&["munin", "recall", "refund SLA"]);
+        parse_ok(&["munin", "show", "@munin/a_deadbeefdeadbeef"]);
+        parse_ok(&[
+            "munin",
+            "show",
+            "@context/a_deadbeefdeadbeef",
+            "--lines",
+            "1:20",
+        ]);
+        parse_ok(&[
+            "munin",
+            "diff",
+            "@munin/a_deadbeefdeadbeef",
+            "@munin/a_feedfacefeedface",
+        ]);
         parse_ok(&["munin", "install", "--dry-run"]);
         parse_ok(&["munin", "install", "--claude", "--force"]);
         parse_ok(&["munin", "install", "--keep-legacy"]);
@@ -2061,6 +2490,67 @@ mod tests {
             .expect("ingest quick skill");
         let ingest_command = render_claude_install_quick_command(ingest);
         assert!(ingest_command.contains("Invoke the `munin-memory-os-ingest` skill"));
+    }
+
+    #[test]
+    fn claude_settings_upsert_adds_munin_prompt_hook_once() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "node C:/Users/OEM/.claude/hooks/context-hint.js",
+                                "timeout": 8000
+                            }
+                        ]
+                    },
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "node C:/Users/OEM/.claude/hooks/skill-routing-hint.js",
+                                "timeout": 3000
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+        let changed = upsert_claude_user_prompt_hook(
+            &mut settings,
+            "node C:/Users/OEM/.claude/hooks/munin-runtime.js",
+        );
+        let unchanged = upsert_claude_user_prompt_hook(
+            &mut settings,
+            "node C:/Users/OEM/.claude/hooks/munin-runtime.js",
+        );
+        let entries = settings
+            .pointer("/hooks/UserPromptSubmit")
+            .and_then(|value| value.as_array())
+            .expect("entries");
+        let hooks = settings
+            .pointer("/hooks/UserPromptSubmit/0/hooks")
+            .and_then(|value| value.as_array())
+            .expect("hooks");
+
+        assert!(changed);
+        assert!(!unchanged);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            hooks[0].get("command").and_then(|value| value.as_str()),
+            Some("node C:/Users/OEM/.claude/hooks/munin-runtime.js")
+        );
+        assert_eq!(
+            settings
+                .pointer("/hooks/UserPromptSubmit/1/hooks/0/command")
+                .and_then(|value| value.as_str()),
+            Some("node C:/Users/OEM/.claude/hooks/skill-routing-hint.js")
+        );
+        assert!(!serde_json::to_string(&settings)
+            .expect("settings json")
+            .contains("context-hint.js"));
     }
 
     #[test]

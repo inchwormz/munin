@@ -2,15 +2,15 @@
 
 Local memory for Claude Code and Codex.
 
-Munin ingests all Claude Codex sessions. Approx time for 3000 sessions raw data = < 1minute
+Munin ingests Claude and Codex sessions and compiles them into local Memory OS
+surfaces for live continuity, strategy, and recall.
 
-Munin compiles them into a local Memory OS Kernel
-and exposes that memory back to your agent through CLI commands, Claude slash
+It exposes that memory back to your agent through CLI commands, Claude slash
 commands, and Codex skills. It is designed for developers who want agents to
 remember active work, repeated mistakes, strategic priorities, and unfinished
 tasks without sending that memory to a hosted service.
 
-Current testing build: `v0.5.4`.
+Current release: `v0.5.6`.
 
 [![CI](https://github.com/inchwormz/munin-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/inchwormz/munin-memory/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/munin-memory.svg)](https://crates.io/crates/munin-memory)
@@ -18,6 +18,17 @@ Current testing build: `v0.5.4`.
 [![GitHub stars](https://img.shields.io/github/stars/inchwormz/munin-memory?style=social)](https://github.com/inchwormz/munin-memory)
 
 Munin is open source under the Apache 2.0 license.
+
+## Runtime Ownership
+
+Munin is the product owner for runtime context. End users should not need the
+`context` tool installed in order to use Munin's Session Brain, startup brief,
+strategy surfaces, or Claude/Codex integration assets.
+
+Architecture docs:
+
+- [Runtime Context Ownership](docs/architecture/runtime-context-ownership.md)
+- [Context Strangler Migration](docs/architecture/context-strangler-migration.md)
 
 ## What Munin Does
 
@@ -79,7 +90,8 @@ munin install --check-resolvable
 
 ## Install Agent Skills
 
-After the binary works, install the surfaces for the agent you use.
+After the binary works, install the surfaces for the agent you use. The
+supported runtime path is Munin-only.
 
 ### Claude Code
 
@@ -293,6 +305,19 @@ Codex equivalents use `$...`.
 
 `munin install` archives old Munin skill folders into `.munin-legacy` by default.
 Use `--keep-legacy` to leave them in place.
+
+## Non-Technical Release Check
+
+For a plain PASS/WARN/FAIL readout before trusting a local build, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\munin-release-check.ps1
+```
+
+The check verifies the binary, install contract from the repo, install contract
+from a temporary folder, memory health, promotion proof, and resolver routing.
+`WARN` means Munin is mechanically usable but has a follow-up to review. `FAIL`
+means fix the named item before trusting the release.
 
 ## Privacy And Storage
 

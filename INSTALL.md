@@ -26,5 +26,11 @@ munin hygiene --format text
 munin install --check-resolvable
 ```
 
-`context` remains the shell wrapper. This repo owns the `munin` memory CLI and
-the memory-specific read, proof, recall, hygiene, strategy, and install surfaces.
+End users should treat `munin` as the only supported runtime-context CLI.
+Context may still exist as an internal local developer tool during migration,
+but it is not part of the supported Munin install path.
+
+See also:
+
+- [Runtime Context Ownership](docs/architecture/runtime-context-ownership.md)
+- [Context Strangler Migration](docs/architecture/context-strangler-migration.md)

@@ -1,7 +1,7 @@
 //! Artifact-backed replay suppression for large Context outputs.
 
 use crate::core::config::Config;
-use crate::core::constants::{ARTIFACTS_DIR, CONTEXT_DATA_DIR};
+use crate::core::constants::{ARTIFACTS_DIR, LEGACY_CONTEXT_DATA_DIR, MUNIN_DATA_DIR};
 use crate::core::tracking::{estimate_tokens, Tracker};
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -11,7 +11,8 @@ use std::fs::{self, create_dir_all, read_dir, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const ARTIFACT_ID_PREFIX: &str = "@context/a_";
+const ARTIFACT_ID_PREFIX: &str = "@munin/a_";
+const LEGACY_ARTIFACT_ID_PREFIX: &str = "@context/a_";
 const DEFAULT_HASH_PREFIX_LEN: usize = 16;
 const INDEX_TAIL_CHUNK_BYTES: u64 = 16 * 1024;
 const ARTIFACT_REFS_DIR: &str = "refs";
@@ -66,7 +67,7 @@ struct ArtifactLocation {
 }
 
 fn artifact_root_from_config(config: &Config) -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("CONTEXT_ARTIFACTS_DIR") {
+    if let Ok(dir) = std::env::var("MUNIN_ARTIFACTS_DIR") {
         return Ok(PathBuf::from(dir));
     }
 
@@ -76,17 +77,33 @@ fn artifact_root_from_config(config: &Config) -> Result<PathBuf> {
 
     let data_dir = dirs::data_local_dir()
         .ok_or_else(|| anyhow!("failed to resolve local data directory for artifacts"))?;
-    Ok(data_dir.join(CONTEXT_DATA_DIR).join(ARTIFACTS_DIR))
+    Ok(data_dir.join(MUNIN_DATA_DIR).join(ARTIFACTS_DIR))
 }
 
 fn artifact_location(config: &Config) -> Result<ArtifactLocation> {
     let root = artifact_root_from_config(config)?;
-    Ok(ArtifactLocation {
+    Ok(artifact_location_from_root(root))
+}
+
+fn artifact_location_from_root(root: PathBuf) -> ArtifactLocation {
+    ArtifactLocation {
         blobs_dir: root.join("blobs"),
         refs_dir: root.join(ARTIFACT_REFS_DIR),
         index_path: root.join("index.jsonl"),
         root,
-    })
+    }
+}
+
+fn legacy_artifact_location_from_config(config: &Config) -> Result<Option<ArtifactLocation>> {
+    if !config.artifacts.directory.is_none() || std::env::var("MUNIN_ARTIFACTS_DIR").is_ok() {
+        return Ok(None);
+    }
+    let data_dir = dirs::data_local_dir()
+        .ok_or_else(|| anyhow!("failed to resolve local data directory for artifacts"))?;
+    let legacy_root = data_dir.join(LEGACY_CONTEXT_DATA_DIR).join(ARTIFACTS_DIR);
+    Ok(legacy_root
+        .exists()
+        .then(|| artifact_location_from_root(legacy_root)))
 }
 
 fn ensure_artifact_dirs(location: &ArtifactLocation) -> Result<()> {
@@ -127,6 +144,7 @@ fn artifact_suffix(artifact_id: &str) -> Result<String> {
     let normalized = normalize_artifact_id(artifact_id);
     let suffix = normalized
         .strip_prefix(ARTIFACT_ID_PREFIX)
+        .or_else(|| normalized.strip_prefix(LEGACY_ARTIFACT_ID_PREFIX))
         .map(ToOwned::to_owned)
         .ok_or_else(|| anyhow!("invalid artifact id: {artifact_id}"))?;
 
@@ -333,14 +351,14 @@ fn render_new_output(
     preview_chars: usize,
 ) -> String {
     format!(
-        "[artifact {artifact_id}]\nstats: {bytes} bytes | {lines} lines\npreview:\n{}\n[use: context show {artifact_id}]",
+        "[artifact {artifact_id}]\nstats: {bytes} bytes | {lines} lines\npreview:\n{}\n[use: munin show {artifact_id}]",
         preview_text(text, preview_chars)
     )
 }
 
 fn render_unchanged_output(artifact_id: &str, bytes: usize, lines: usize) -> String {
     format!(
-        "[artifact {artifact_id} unchanged since previous run]\nstats: {bytes} bytes | {lines} lines\n[use: context show {artifact_id}]"
+        "[artifact {artifact_id} unchanged since previous run]\nstats: {bytes} bytes | {lines} lines\n[use: munin show {artifact_id}]"
     )
 }
 
@@ -354,7 +372,7 @@ fn render_delta_output(
     delta_lines: usize,
 ) -> String {
     format!(
-        "[artifact {artifact_id} changed since {previous_artifact_id}]\nstats: {bytes} bytes | {lines} lines\ndelta summary:\n{}\n[use: context diff {previous_artifact_id} {artifact_id}]",
+        "[artifact {artifact_id} changed since {previous_artifact_id}]\nstats: {bytes} bytes | {lines} lines\ndelta summary:\n{}\n[use: munin diff {previous_artifact_id} {artifact_id}]",
         summarize_delta(previous_text, text, delta_lines)
     )
 }
@@ -409,8 +427,7 @@ fn prepare_output_for_display_with_config(
     config: &Config,
     cwd: &str,
 ) -> Result<ArtifactRenderResult> {
-    if !config.artifacts.enabled || std::env::var("CONTEXT_ARTIFACTS").ok().as_deref() == Some("0")
-    {
+    if !config.artifacts.enabled || std::env::var("MUNIN_ARTIFACTS").ok().as_deref() == Some("0") {
         return Ok(ArtifactRenderResult {
             rendered: text.to_string(),
             artifact_id: None,
@@ -526,6 +543,7 @@ fn prepare_output_for_display_with_config(
 fn resolve_blob_path_from_artifact_id_with_location(
     location: &ArtifactLocation,
     artifact_id: &str,
+    reseed_ref: bool,
 ) -> Result<PathBuf> {
     let normalized = normalize_artifact_id(artifact_id);
     let prefix = artifact_suffix(&normalized)?;
@@ -563,12 +581,53 @@ fn resolve_blob_path_from_artifact_id_with_location(
         0 => Err(anyhow!("artifact not found: {artifact_id}")),
         1 => {
             let path = matches.remove(0);
-            if let Some(hash) = hash_from_blob_path(&path) {
-                let _ = store_artifact_ref(location, &normalized, &hash);
+            if reseed_ref {
+                if let Some(hash) = hash_from_blob_path(&path) {
+                    let _ = store_artifact_ref(location, &normalized, &hash);
+                }
             }
             Ok(path)
         }
         _ => Err(anyhow!("artifact id is ambiguous: {artifact_id}")),
+    }
+}
+
+fn resolve_blob_path_from_artifact_id_with_config(
+    config: &Config,
+    artifact_id: &str,
+) -> Result<PathBuf> {
+    let primary = artifact_location(config)?;
+    let legacy = legacy_artifact_location_from_config(config)?;
+    resolve_blob_path_from_artifact_id_with_locations(&primary, legacy.as_ref(), artifact_id)
+}
+
+fn resolve_blob_path_from_artifact_id_with_locations(
+    primary: &ArtifactLocation,
+    legacy: Option<&ArtifactLocation>,
+    artifact_id: &str,
+) -> Result<PathBuf> {
+    match resolve_blob_path_from_artifact_id_with_location(primary, artifact_id, true) {
+        Ok(path) => Ok(path),
+        Err(primary_err)
+            if normalize_artifact_id(artifact_id).starts_with(LEGACY_ARTIFACT_ID_PREFIX) =>
+        {
+            if let Some(legacy) = legacy {
+                if legacy.root != primary.root {
+                    return resolve_blob_path_from_artifact_id_with_location(
+                        legacy,
+                        artifact_id,
+                        false,
+                    )
+                        .with_context(|| {
+                            format!(
+                                "legacy artifact fallback also failed after primary lookup error: {primary_err:#}"
+                            )
+                        });
+                }
+            }
+            Err(primary_err)
+        }
+        Err(err) => Err(err),
     }
 }
 
@@ -578,8 +637,7 @@ pub fn load_artifact_text(artifact_id: &str) -> Result<String> {
 }
 
 pub(crate) fn load_artifact_text_with_config(config: &Config, artifact_id: &str) -> Result<String> {
-    let location = artifact_location(config)?;
-    let path = resolve_blob_path_from_artifact_id_with_location(&location, artifact_id)?;
+    let path = resolve_blob_path_from_artifact_id_with_config(config, artifact_id)?;
     std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read artifact {}", path.display()))
 }
@@ -623,8 +681,7 @@ fn show_artifact_with_config(
     artifact_id: &str,
     lines_spec: Option<&str>,
 ) -> Result<String> {
-    let location = artifact_location(config)?;
-    let path = resolve_blob_path_from_artifact_id_with_location(&location, artifact_id)?;
+    let path = resolve_blob_path_from_artifact_id_with_config(config, artifact_id)?;
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read artifact {}", path.display()))?;
     if let Some(spec) = lines_spec {
@@ -663,7 +720,7 @@ mod tests {
         let (_tmp, config) = temp_config();
         let output = "same output body\n".repeat(200);
         let first = prepare_output_for_display_with_config(
-            "context grep",
+            "munin grep",
             &output,
             "runner",
             &config,
@@ -671,7 +728,7 @@ mod tests {
         )
         .expect("first");
         let second = prepare_output_for_display_with_config(
-            "context grep",
+            "munin grep",
             &output,
             "runner",
             &config,
@@ -690,7 +747,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let rendered = prepare_output_for_display_with_config(
-            "context grep",
+            "munin grep",
             &output.repeat(100),
             "runner",
             &config,
@@ -708,7 +765,7 @@ mod tests {
         let (_tmp, config) = temp_config();
         let output = "line\n".repeat(200);
         let rendered = prepare_output_for_display_with_config(
-            "context read sample.txt",
+            "munin read sample.txt",
             &output,
             "runner",
             &config,
@@ -728,7 +785,7 @@ mod tests {
         let (_tmp, config) = temp_config();
         let output = "line\n".repeat(200);
         let rendered = prepare_output_for_display_with_config(
-            "context read sample.txt",
+            "munin read sample.txt",
             &output,
             "runner",
             &config,
@@ -753,7 +810,7 @@ mod tests {
         let (_tmp, config) = temp_config();
         let output = "line\n".repeat(200);
         let rendered = prepare_output_for_display_with_config(
-            "context read sample.txt",
+            "munin read sample.txt",
             &output,
             "runner",
             &config,
@@ -775,9 +832,70 @@ mod tests {
 
     #[test]
     fn invalid_artifact_ids_do_not_accept_path_segments() {
+        assert!(!is_artifact_id("@munin/a_deadbeefdeadbeef/extra"));
         assert!(!is_artifact_id("@context/a_deadbeefdeadbeef/extra"));
         assert!(!is_artifact_id("@context\\a_deadbeefdeadbeef\\extra"));
+        assert!(artifact_suffix("@munin/a_deadbeefdeadbeef/extra").is_err());
         assert!(artifact_suffix("@context/a_deadbeefdeadbeef/extra").is_err());
+    }
+
+    #[test]
+    fn legacy_context_artifact_ids_still_load() {
+        let (_tmp, config) = temp_config();
+        let output = "line\n".repeat(200);
+        let rendered = prepare_output_for_display_with_config(
+            "munin read sample.txt",
+            &output,
+            "runner",
+            &config,
+            "C:/repo",
+        )
+        .expect("rendered");
+        let artifact_id = rendered.artifact_id.expect("artifact id");
+        let legacy_id = artifact_id.replace("@munin/", "@context/");
+
+        assert!(is_artifact_id(&legacy_id));
+        let loaded = load_artifact_text_with_config(&config, &legacy_id).expect("legacy load");
+        assert_eq!(loaded, output);
+    }
+
+    #[test]
+    fn legacy_context_artifact_loads_from_legacy_root_when_munin_root_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_root = tmp.path();
+        let munin_root = data_root.join(MUNIN_DATA_DIR).join(ARTIFACTS_DIR);
+        let legacy_root = data_root.join(LEGACY_CONTEXT_DATA_DIR).join(ARTIFACTS_DIR);
+        fs::create_dir_all(munin_root.join("blobs")).expect("munin blobs");
+        fs::create_dir_all(legacy_root.join("blobs")).expect("legacy blobs");
+        fs::create_dir_all(legacy_root.join(ARTIFACT_REFS_DIR)).expect("legacy refs");
+
+        let output = "legacy artifact text\n".repeat(50);
+        let hash = hash_text(&output);
+        let legacy_id = format!(
+            "{}{}",
+            LEGACY_ARTIFACT_ID_PREFIX,
+            &hash[..DEFAULT_HASH_PREFIX_LEN]
+        );
+        fs::write(
+            legacy_root.join("blobs").join(format!("{hash}.txt")),
+            &output,
+        )
+        .expect("legacy blob");
+
+        let primary = artifact_location_from_root(munin_root);
+        let legacy = artifact_location_from_root(legacy_root);
+        let path =
+            resolve_blob_path_from_artifact_id_with_locations(&primary, Some(&legacy), &legacy_id)
+                .expect("legacy path");
+        let loaded = fs::read_to_string(path).expect("legacy load");
+        let suffix = artifact_suffix(&legacy_id).expect("legacy suffix");
+        let legacy_ref_path = artifact_ref_path(&legacy, &suffix);
+
+        assert_eq!(loaded, output);
+        assert!(
+            !legacy_ref_path.exists(),
+            "legacy artifact fallback must stay read-only"
+        );
     }
 
     #[test]
@@ -788,7 +906,7 @@ mod tests {
 
         let records = (0..6)
             .map(|index| ArtifactRecord {
-                artifact_id: format!("@context/a_{index:016x}"),
+                artifact_id: format!("@munin/a_{index:016x}"),
                 hash: format!("{index:064x}"),
                 command_sig: format!("cmd-{index}"),
                 cwd: "C:/repo".to_string(),

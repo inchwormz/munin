@@ -815,7 +815,7 @@ mod tests {
                 selected_items: Vec::new(),
                 exclusions: Vec::new(),
                 reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                    recommended_command: "context context".to_string(),
+                    recommended_command: "munin resume --format prompt".to_string(),
                     current_recommendation: None,
                     first_question: "What still matters?".to_string(),
                     first_verification: "Verify the next step.".to_string(),

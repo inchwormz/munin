@@ -2934,7 +2934,7 @@ mod tests {
     fn approve_does_not_relaunch_already_claimed_job() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("CONTEXT_CONFIG_DIR", temp.path().join("config"));
+        std::env::set_var("MUNIN_CONFIG_DIR", temp.path().join("config"));
 
         let mut config = Config::default();
         config.proactivity.enabled = true;
@@ -2992,7 +2992,7 @@ mod tests {
             Some(claim_path.to_string_lossy().as_ref())
         );
 
-        std::env::remove_var("CONTEXT_CONFIG_DIR");
+        std::env::remove_var("MUNIN_CONFIG_DIR");
     }
 
     #[test]
@@ -3147,10 +3147,10 @@ mod tests {
     }
 
     #[test]
-    fn proactivity_paths_default_under_context_data_dir() {
+    fn proactivity_paths_default_under_munin_data_dir() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("CONTEXT_DATA_DIR_PATH", temp.path());
+        std::env::set_var("MUNIN_DATA_DIR", temp.path());
 
         let paths = resolve_paths(&ProactivityConfig::default()).expect("paths");
         assert!(paths
@@ -3166,7 +3166,7 @@ mod tests {
             .state_dir
             .ends_with(Path::new("proactivity").join("state")));
 
-        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
+        std::env::remove_var("MUNIN_DATA_DIR");
     }
 
     #[test]

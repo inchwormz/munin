@@ -252,14 +252,14 @@ impl Tracker {
                 "objective_id": serde_json::Value::Null,
                 "session_id": serde_json::Value::Null,
                 "agent_id": serde_json::Value::Null,
-                "runtime_profile": "legacy-context",
+                "runtime_profile": "munin-runtime",
                 "os_profile": std::env::consts::OS,
                 "valid_from": Utc::now().to_rfc3339(),
                 "valid_until": serde_json::Value::Null
             })
             .to_string(),
             actor_json: serde_json::json!({
-                "actor_id": "context",
+                "actor_id": "munin",
                 "actor_kind": "system",
                 "origin_agent_id": serde_json::Value::Null,
                 "trust_domain": "local_core"

@@ -110,7 +110,7 @@ pub fn ensure_memory_os_session_backfill_with_force(
     force: bool,
 ) -> Result<Option<SessionBackfillReport>> {
     if cfg!(test)
-        || std::env::var("CONTEXT_SKIP_MEMORY_OS_ONBOARDING")
+        || std::env::var("MUNIN_SKIP_MEMORY_OS_ONBOARDING")
             .ok()
             .as_deref()
             == Some("1")
@@ -201,7 +201,7 @@ fn should_skip_incremental_backfill(state: &SessionBackfillState) -> bool {
     if state.schema_version != ONBOARDING_SCHEMA_VERSION || state.completed_at.is_none() {
         return false;
     }
-    if std::env::var("CONTEXT_MEMORY_OS_FORCE_ONBOARDING")
+    if std::env::var("MUNIN_MEMORY_OS_FORCE_ONBOARDING")
         .ok()
         .as_deref()
         == Some("1")
@@ -562,7 +562,7 @@ fn session_checkpoint_capture(session: &SessionRecord) -> MemoryOsCheckpointCapt
         .last()
         .map(|correction| correction.pair.right_command.clone())
         .or(last_successful_command)
-        .unwrap_or_else(|| "context context".to_string());
+        .unwrap_or_else(|| "munin resume --format prompt".to_string());
 
     let captured_at = session
         .shells

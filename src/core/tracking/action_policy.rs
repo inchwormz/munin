@@ -336,6 +336,7 @@ impl Tracker {
 
     pub fn latest_memory_os_action_subject(&self, command_sig: &str) -> Result<Option<String>> {
         let project_path = current_project_path_string();
+        let expected = canonical_memory_os_command_sig(command_sig);
         let mut stmt = self.conn.prepare(
             "SELECT cue_json, action_json
              FROM memory_os_action_observations
@@ -352,7 +353,13 @@ impl Tracker {
             let cue: crate::core::memory_os::MemoryOsActionCue = serde_json::from_str(&cue_json)?;
             let action: crate::core::memory_os::MemoryOsAction =
                 serde_json::from_str(&action_json)?;
-            if action.command_sig.as_deref() == Some(command_sig) {
+            if action
+                .command_sig
+                .as_deref()
+                .map(canonical_memory_os_command_sig)
+                .as_deref()
+                == Some(expected.as_str())
+            {
                 return Ok(cue.trigger_subject);
             }
         }
@@ -699,7 +706,8 @@ impl Tracker {
                 executions.iter().enumerate().find(|(index, execution)| {
                     !execution_indexes[*index]
                         && execution.execution_kind != "context-meta-command"
-                        && execution.command_sig == command_sig
+                        && canonical_memory_os_command_sig(&execution.command_sig)
+                            == canonical_memory_os_command_sig(command_sig)
                         && match cue.trigger_subject.as_deref() {
                             Some(expected_subject) => {
                                 execution.subject_ref.as_deref() == Some(expected_subject)
@@ -784,5 +792,14 @@ impl Tracker {
                 .then(right.last_observed_at.cmp(&left.last_observed_at))
         });
         Ok(result)
+    }
+}
+
+fn canonical_memory_os_command_sig(command: &str) -> String {
+    match command.trim() {
+        "context context" | "context context --format prompt" | "context resume" => {
+            "munin resume --format prompt".to_string()
+        }
+        other => other.to_string(),
     }
 }

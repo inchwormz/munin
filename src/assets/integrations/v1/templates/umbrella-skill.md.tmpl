@@ -1,0 +1,31 @@
+---
+name: __NAME__
+description: __DESCRIPTION__
+---
+# __NAME__
+
+## When to use
+__DESCRIPTION_EXPANDED__
+
+## Flow
+0. If the user only invoked Munin with no substantive ask, stop and ask what they want Munin to check. Do not run recall, doctor, proactivity, or any status command for a bare invocation.
+1. Run `munin resolve --format text "<user ask>"`.
+2. Run the returned command.
+3. Follow the matching narrow skill's Trust, Fallback, What not to do, and Done rules.
+
+## Resolver output
+Routes: __ROUTES__.
+
+Live-session continuity routes to `brain` only when Session Brain is live. Fallback or stale continuity routes to `resume`.
+
+## Trust
+- Trust the route unless the user clearly asked for a different narrow surface.
+- If route is `recall` and the command returns zero topic matches, do not silently fall back to overview.
+- If route is `brain`, check the freshness label before saying anything is current.
+
+## Fallback
+- If the route looks wrong, ask `munin resolve` with the user's exact words and compare the route to the narrow skill descriptions.
+- If the command fails to parse, run `munin install --check-resolvable` before using installed skills.
+
+## Done
+The user has a compiled answer from the chosen Munin surface, not a raw transcript dump.

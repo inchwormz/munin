@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.6 - 2026-04-21
+
+### Added
+
+- Added Munin-owned runtime context packets and installable Claude/Codex integration assets so end-user runtime context no longer depends on the local Context wrapper.
+- Added architecture documentation for runtime context ownership and the Context strangler migration.
+- Added `munin show` and `munin diff` artifact helpers plus Munin-native artifact IDs.
+- Added the `scripts/munin-release-check.ps1` local release verification script.
+
+### Changed
+
+- `munin brain` now emits compiled public context only: no raw transcript paths, no raw message blocks, no stale progress chatter, and no repeated clipped subgoals.
+- Session Brain now accepts partial strategy memory from compiled Memory OS when no complete formal strategy kernel is configured.
+- Session Brain now defaults to compiled Memory OS overview/profile context, including project focus and user operating model, while keeping full heavyweight user context opt-in.
+- Claude install now writes `munin-runtime.js`, prunes legacy `context-*.js` prompt hooks, and keeps unrelated hooks intact.
+- Runtime data, config, artifact, and tee write paths now use Munin-owned roots and environment variables.
+
+### Fixed
+
+- Fixed package contents so `src/runtime_context/**` is included in crates.io packages.
+- Fixed legacy `@context/a_` artifact fallback so it stays read-only and cannot write ref sidecars into Context roots.
+- Fixed Session Brain project-root inference so the current invocation worktree wins over broader transcript roots.
+- Fixed `install --check-resolvable` so it can run from arbitrary working directories.
+
 ## 0.5.5 - 2026-04-20
 
 ### Fixed

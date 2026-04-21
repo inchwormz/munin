@@ -8,14 +8,20 @@ use std::path::{Path, PathBuf};
 
 pub fn build_strategy_context(project_root: &Path) -> Result<SessionBrainStrategyContext> {
     let config = Config::load().context("failed to load config.toml")?;
-    let Some(scope_id) = resolve_relevant_scope(&config, project_root) else {
-        return Ok(SessionBrainStrategyContext {
-            summary: Vec::new(),
-            source_paths: Vec::new(),
-            planning_complete: false,
-        });
-    };
+    for scope_id in resolve_relevant_scopes(&config, project_root) {
+        if let Ok(context) = build_strategy_context_for_scope(scope_id) {
+            return Ok(context);
+        }
+    }
 
+    Ok(SessionBrainStrategyContext {
+        summary: Vec::new(),
+        source_paths: Vec::new(),
+        planning_complete: false,
+    })
+}
+
+fn build_strategy_context_for_scope(scope_id: String) -> Result<SessionBrainStrategyContext> {
     let status = strategy::status(&StrategyReadOptions {
         scope: scope_id.clone(),
     })?;
@@ -69,14 +75,36 @@ pub fn build_strategy_context(project_root: &Path) -> Result<SessionBrainStrateg
     })
 }
 
-fn resolve_relevant_scope(config: &Config, project_root: &Path) -> Option<String> {
+fn resolve_relevant_scopes(config: &Config, project_root: &Path) -> Vec<String> {
     let project_root = normalized_project_root(project_root);
-    config.strategy.scopes.iter().find_map(|(scope_id, scope)| {
-        if !scope.enabled {
-            return None;
+    let mut scopes = Vec::new();
+
+    scopes.extend(
+        config
+            .strategy
+            .scopes
+            .iter()
+            .filter_map(|(scope_id, scope)| {
+                (scope.enabled && scope_matches_project(scope, &project_root))
+                    .then(|| scope_id.clone())
+            }),
+    );
+
+    if let Some(default_scope) = config.strategy.configured_scope_name(None) {
+        if !scopes.contains(&default_scope) {
+            scopes.push(default_scope);
         }
-        scope_matches_project(scope, &project_root).then(|| scope_id.clone())
-    })
+    }
+
+    if let Ok(reports) = strategy::discover_inspect_reports(3) {
+        for report in reports {
+            if !scopes.contains(&report.scope_id) {
+                scopes.push(report.scope_id);
+            }
+        }
+    }
+
+    scopes
 }
 
 fn scope_matches_project(scope: &StrategyScopeConfig, project_root: &str) -> bool {

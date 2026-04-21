@@ -36,6 +36,12 @@ jobs:
       - name: Resolver and skill contracts
         run: cargo run --locked --bin munin -- install --check-resolvable
 
+      - name: Non-technical release check
+        shell: pwsh
+        run: |
+          $bin = if ($IsWindows) { ".\target\debug\munin.exe" } else { "./target/debug/munin" }
+          ./scripts/munin-release-check.ps1 -MuninBin $bin
+
   licenses:
     name: License allowlist
     runs-on: ubuntu-latest

@@ -37,6 +37,12 @@ struct TranscriptCandidate {
 }
 
 #[derive(Debug, Clone)]
+struct TranscriptFile {
+    path: PathBuf,
+    modified_at: SystemTime,
+}
+
+#[derive(Debug, Clone)]
 struct CodexMeta {
     session_id: String,
     cwd: Option<String>,
@@ -317,19 +323,18 @@ fn find_latest_codex_session(project_root: &Path) -> Result<Option<TranscriptCan
         return Ok(None);
     }
 
-    let project_root = normalized_project_root(project_root);
-    let mut best: Option<TranscriptCandidate> = None;
+    find_latest_codex_session_in_root(project_root, &root)
+}
 
-    for entry in WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-        .flatten()
-    {
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Some(meta) = read_codex_meta(path)? else {
+fn find_latest_codex_session_in_root(
+    project_root: &Path,
+    root: &Path,
+) -> Result<Option<TranscriptCandidate>> {
+    let project_root = normalized_project_root(project_root);
+    let files = newest_jsonl_files(root)?;
+
+    for file in files {
+        let Some(meta) = read_codex_meta(&file.path)? else {
             continue;
         };
         if meta.is_subagent {
@@ -341,23 +346,14 @@ fn find_latest_codex_session(project_root: &Path) -> Result<Option<TranscriptCan
         if !project_matches(cwd, &project_root) {
             continue;
         }
-        let modified_at = fs::metadata(path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let replace = best
-            .as_ref()
-            .map(|current| modified_at > current.modified_at)
-            .unwrap_or(true);
-        if replace {
-            best = Some(TranscriptCandidate {
-                session_id: meta.session_id,
-                path: path.to_path_buf(),
-                modified_at,
-            });
-        }
+        return Ok(Some(TranscriptCandidate {
+            session_id: meta.session_id,
+            path: file.path,
+            modified_at: file.modified_at,
+        }));
     }
 
-    Ok(best)
+    Ok(None)
 }
 
 fn find_latest_claude_session(project_root: &Path) -> Result<Option<TranscriptCandidate>> {
@@ -369,19 +365,27 @@ fn find_latest_claude_session(project_root: &Path) -> Result<Option<TranscriptCa
         return Ok(None);
     }
 
-    let project_root = normalized_project_root(project_root);
-    let mut best: Option<TranscriptCandidate> = None;
-
-    for entry in WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-        .flatten()
-    {
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
+    let project_sessions_root = root.join(claude_project_dir_name(project_root));
+    if project_sessions_root.exists() {
+        if let Some(candidate) =
+            find_latest_claude_session_in_root(project_root, &project_sessions_root)?
+        {
+            return Ok(Some(candidate));
         }
-        let Some(meta) = read_claude_meta(path)? else {
+    }
+
+    find_latest_claude_session_in_root(project_root, &root)
+}
+
+fn find_latest_claude_session_in_root(
+    project_root: &Path,
+    root: &Path,
+) -> Result<Option<TranscriptCandidate>> {
+    let project_root = normalized_project_root(project_root);
+    let files = newest_jsonl_files(root)?;
+
+    for file in files {
+        let Some(meta) = read_claude_meta(&file.path)? else {
             continue;
         };
         if meta.is_sidechain {
@@ -393,23 +397,47 @@ fn find_latest_claude_session(project_root: &Path) -> Result<Option<TranscriptCa
         if !project_matches(cwd, &project_root) {
             continue;
         }
-        let modified_at = fs::metadata(path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let replace = best
-            .as_ref()
-            .map(|current| modified_at > current.modified_at)
-            .unwrap_or(true);
-        if replace {
-            best = Some(TranscriptCandidate {
-                session_id: meta.session_id,
-                path: path.to_path_buf(),
-                modified_at,
-            });
-        }
+        return Ok(Some(TranscriptCandidate {
+            session_id: meta.session_id,
+            path: file.path,
+            modified_at: file.modified_at,
+        }));
     }
 
-    Ok(best)
+    Ok(None)
+}
+
+fn newest_jsonl_files(root: &Path) -> Result<Vec<TranscriptFile>> {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
+        if !entry.file_type().is_file()
+            || entry.path().extension().and_then(|ext| ext.to_str()) != Some("jsonl")
+        {
+            continue;
+        }
+        let modified_at = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        files.push(TranscriptFile {
+            path: entry.path().to_path_buf(),
+            modified_at,
+        });
+    }
+    files.sort_by(|left, right| {
+        right
+            .modified_at
+            .cmp(&left.modified_at)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(files)
+}
+
+fn claude_project_dir_name(project_root: &Path) -> String {
+    normalized_project_root(project_root)
+        .replace(':', "-")
+        .replace(['/', '\\'], "-")
 }
 
 fn extract_context_snapshot_paths(project_root: &Path, text: &str) -> Vec<PathBuf> {
@@ -592,6 +620,20 @@ fn parse_codex_messages(path: &Path, session_id: &str) -> Result<SessionMessages
                 let Some(payload) = value.get("payload") else {
                     continue;
                 };
+                if payload.get("type").and_then(Value::as_str) == Some("function_call") {
+                    if payload.get("name").and_then(Value::as_str) == Some("shell_command") {
+                        if let Some(arguments) = payload.get("arguments").and_then(Value::as_str) {
+                            if let Ok(arguments) = serde_json::from_str::<Value>(arguments) {
+                                if let Some(workdir) =
+                                    arguments.get("workdir").and_then(Value::as_str)
+                                {
+                                    cwd = Some(workdir.to_string());
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if payload.get("type").and_then(Value::as_str) != Some("message") {
                     continue;
                 }
@@ -808,6 +850,8 @@ fn noise_block_end_marker(line: &str) -> Option<&'static str> {
         Some("</environment_context>")
     } else if line.starts_with("<context_packet") {
         Some("</context_packet>")
+    } else if line.starts_with("<runtime_context_v1") {
+        Some("</runtime_context_v1>")
     } else {
         wrapper_block_end_marker(line)
     }
@@ -828,6 +872,8 @@ fn is_noise_line(line: &str) -> bool {
         || lowered.starts_with("<task_goal>")
         || lowered.starts_with("<context_packet")
         || lowered.starts_with("</context_packet")
+        || lowered.starts_with("<runtime_context_v1")
+        || lowered.starts_with("</runtime_context_v1")
         || is_wrapper_tag_line(&lowered)
 }
 
@@ -854,6 +900,8 @@ fn wrapper_block_end_marker(line: &str) -> Option<&'static str> {
         Some("</turn_aborted>")
     } else if line.starts_with("<skill") {
         Some("</skill>")
+    } else if line.starts_with("<runtime_context_v1") {
+        Some("</runtime_context_v1>")
     } else {
         None
     }
@@ -1022,6 +1070,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::time::Duration as StdDuration;
 
     fn fixture_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1029,6 +1078,65 @@ mod tests {
             .join("fixtures")
             .join("session_brain")
             .join(name)
+    }
+
+    #[test]
+    fn latest_claude_session_checks_newest_files_first() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions_root = temp.path().join("claude-projects");
+        let project_root = temp.path().join("repo");
+        fs::create_dir_all(&sessions_root).expect("sessions root");
+        fs::create_dir_all(&project_root).expect("project root");
+
+        let older_path = sessions_root.join("zzz-older.jsonl");
+        fs::write(&older_path, [0xff, 0xfe]).expect("older invalid transcript");
+        std::thread::sleep(StdDuration::from_millis(30));
+
+        let newest_path = sessions_root.join("000-newest.jsonl");
+        let newest = serde_json::json!({
+            "type": "user",
+            "cwd": project_root.to_string_lossy(),
+            "message": { "content": "newest matching project" }
+        });
+        fs::write(&newest_path, format!("{newest}\n")).expect("newest transcript");
+
+        let candidate = find_latest_claude_session_in_root(&project_root, &sessions_root)
+            .expect("find latest")
+            .expect("candidate");
+
+        assert_eq!(candidate.session_id, "000-newest");
+        assert_eq!(candidate.path, newest_path);
+    }
+
+    #[test]
+    fn latest_codex_session_checks_newest_files_first() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions_root = temp.path().join("codex-sessions");
+        let project_root = temp.path().join("repo");
+        fs::create_dir_all(&sessions_root).expect("sessions root");
+        fs::create_dir_all(&project_root).expect("project root");
+
+        let older_path = sessions_root.join("zzz-older.jsonl");
+        fs::write(&older_path, [0xff, 0xfe]).expect("older invalid transcript");
+        std::thread::sleep(StdDuration::from_millis(30));
+
+        let newest_path = sessions_root.join("000-newest.jsonl");
+        let newest = serde_json::json!({
+            "timestamp": "2026-04-21T00:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "codex-newest",
+                "cwd": project_root.to_string_lossy()
+            }
+        });
+        fs::write(&newest_path, format!("{newest}\n")).expect("newest transcript");
+
+        let candidate = find_latest_codex_session_in_root(&project_root, &sessions_root)
+            .expect("find latest")
+            .expect("candidate");
+
+        assert_eq!(candidate.session_id, "codex-newest");
+        assert_eq!(candidate.path, newest_path);
     }
 
     #[test]
@@ -1055,6 +1163,47 @@ mod tests {
         assert_eq!(parsed.user.len(), 1);
         assert_eq!(parsed.assistant.len(), 1);
         assert_eq!(parsed.user[0].text, "Ship the fix");
+    }
+
+    #[test]
+    fn parse_codex_messages_tracks_shell_function_call_workdir() {
+        let temp = tempfile::NamedTempFile::new().expect("tempfile");
+        let mut file = temp.reopen().expect("reopen");
+        let meta = serde_json::json!({
+            "timestamp": "2026-04-15T10:00:00Z",
+            "type": "session_meta",
+            "payload": { "id": "abc", "cwd": "C:\\Users\\OEM\\Projects" }
+        });
+        let call_args = serde_json::json!({
+            "command": "cargo test",
+            "workdir": "C:\\Users\\OEM\\Projects\\munin-memory\\.worktrees\\fix-session-lookup-mtime-sort"
+        });
+        let function_call = serde_json::json!({
+            "timestamp": "2026-04-15T10:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "shell_command",
+                "arguments": call_args.to_string()
+            }
+        });
+        let user = serde_json::json!({
+            "timestamp": "2026-04-15T10:00:02Z",
+            "type": "event_msg",
+            "payload": { "type": "user_message", "message": "$munin-brain" }
+        });
+        writeln!(file, "{meta}").expect("meta");
+        writeln!(file, "{function_call}").expect("function call");
+        writeln!(file, "{user}").expect("user");
+
+        let parsed = parse_codex_messages(temp.path(), "abc").expect("parse");
+
+        assert_eq!(
+            parsed.user[0].cwd.as_deref(),
+            Some(
+                "C:\\Users\\OEM\\Projects\\munin-memory\\.worktrees\\fix-session-lookup-mtime-sort"
+            )
+        );
     }
 
     #[test]

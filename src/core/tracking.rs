@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! - Storage: SQLite database (~/.local/share/context/history.db by default)
+//! - Storage: SQLite database (~/.local/share/munin/history.db by default)
 //! - Retention: 90-day automatic cleanup
 //! - Metrics: Input/output tokens, savings %, execution time
 //!
@@ -242,9 +242,9 @@ const COMMAND_TELEMETRY_FILTER_SQL: &str = r#"lower(replace(original_cmd, '\', '
     AND lower(replace(original_cmd, '\', '/')) NOT LIKE '%/.claude/scripts/localhost-registry.js%'
     AND lower(replace(original_cmd, '\', '/')) NOT LIKE 'bash -c file="$claude_file_path";%'
     AND lower(replace(original_cmd, '\', '/')) NOT LIKE 'bash -c if echo "$claude_file_path"%'"#;
-const CONTEXT_CANONICAL_INPUT_SQL: &str = "COALESCE(canonical_input_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE estimated_source_tokens END)";
-const CONTEXT_CANONICAL_OUTPUT_SQL: &str = "COALESCE(canonical_output_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE MIN(rendered_tokens, estimated_source_tokens) END)";
-const CONTEXT_CANONICAL_SAVED_SQL: &str = "MAX(COALESCE(canonical_input_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE estimated_source_tokens END) - COALESCE(canonical_output_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE MIN(rendered_tokens, estimated_source_tokens) END), 0)";
+const MUNIN_CANONICAL_INPUT_SQL: &str = "COALESCE(canonical_input_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE estimated_source_tokens END)";
+const MUNIN_CANONICAL_OUTPUT_SQL: &str = "COALESCE(canonical_output_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE MIN(rendered_tokens, estimated_source_tokens) END)";
+const MUNIN_CANONICAL_SAVED_SQL: &str = "MAX(COALESCE(canonical_input_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE estimated_source_tokens END) - COALESCE(canonical_output_tokens, CASE WHEN (current_fact_count + recent_change_count + live_claim_count + open_obligation_count + artifact_handle_count + failure_count) = 0 THEN 0 ELSE MIN(rendered_tokens, estimated_source_tokens) END), 0)";
 
 fn context_event_has_reused_state(stats: &ContextEventStats) -> bool {
     stats.current_fact_count > 0
@@ -622,9 +622,9 @@ impl Tracker {
                      saved_tokens = {saved_sql}
                  WHERE canonical_input_tokens IS NULL
                     OR canonical_output_tokens IS NULL",
-                input_sql = CONTEXT_CANONICAL_INPUT_SQL,
-                output_sql = CONTEXT_CANONICAL_OUTPUT_SQL,
-                saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+                input_sql = MUNIN_CANONICAL_INPUT_SQL,
+                output_sql = MUNIN_CANONICAL_OUTPUT_SQL,
+                saved_sql = MUNIN_CANONICAL_SAVED_SQL,
             ),
             [],
         )?;
@@ -1051,15 +1051,15 @@ impl Tracker {
                 stats.failure_count as i64,
             ],
         )?;
-        let legacy_context_id = self.conn.last_insert_rowid();
+        let runtime_context_id = self.conn.last_insert_rowid();
         let _ = self.record_memory_os_shadow_event(MemoryOsShadowEvent {
-            event_id: format!("legacy-context-{legacy_context_id}"),
-            stream_id: format!("legacy.context:{}", project_path),
+            event_id: format!("munin-runtime-context-{runtime_context_id}"),
+            stream_id: format!("munin.runtime-context:{}", project_path),
             stream_revision: 0,
             expected_stream_revision: None,
             tx_index: 0,
-            event_kind: format!("legacy.context-event.{}", event_type),
-            idempotency_key: format!("legacy.context:rowid:{legacy_context_id}"),
+            event_kind: format!("munin.runtime-context-event.{}", event_type),
+            idempotency_key: format!("munin.runtime-context:rowid:{runtime_context_id}"),
             idempotency_receipt_id: None,
             project_path: project_path.clone(),
             scope_json: serde_json::json!({
@@ -1070,14 +1070,14 @@ impl Tracker {
                 "objective_id": serde_json::Value::Null,
                 "session_id": serde_json::Value::Null,
                 "agent_id": serde_json::Value::Null,
-                "runtime_profile": "legacy-context",
+                "runtime_profile": "munin-runtime",
                 "os_profile": std::env::consts::OS,
                 "valid_from": Utc::now().to_rfc3339(),
                 "valid_until": serde_json::Value::Null
             })
             .to_string(),
             actor_json: serde_json::json!({
-                "actor_id": "context",
+                "actor_id": "munin",
                 "actor_kind": "system",
                 "origin_agent_id": serde_json::Value::Null,
                 "trust_domain": "local_core"
@@ -1246,15 +1246,15 @@ impl Tracker {
                 payload_json,
             ],
         )?;
-        let legacy_worldview_id = self.conn.last_insert_rowid();
+        let munin_worldview_id = self.conn.last_insert_rowid();
         let _ = self.record_memory_os_shadow_event(MemoryOsShadowEvent {
-            event_id: format!("legacy-worldview-{legacy_worldview_id}"),
-            stream_id: format!("legacy.worldview:{}:{}", project_path, subject_key),
+            event_id: format!("munin-worldview-{munin_worldview_id}"),
+            stream_id: format!("munin.worldview:{}:{}", project_path, subject_key),
             stream_revision: 0,
             expected_stream_revision: None,
             tx_index: 0,
-            event_kind: format!("legacy.worldview-event.{}", event_type),
-            idempotency_key: format!("legacy.worldview:rowid:{legacy_worldview_id}"),
+            event_kind: format!("munin.worldview-event.{}", event_type),
+            idempotency_key: format!("munin.worldview:rowid:{munin_worldview_id}"),
             idempotency_receipt_id: None,
             project_path: project_path.to_string(),
             scope_json: serde_json::json!({
@@ -1265,14 +1265,14 @@ impl Tracker {
                 "objective_id": serde_json::Value::Null,
                 "session_id": serde_json::Value::Null,
                 "agent_id": serde_json::Value::Null,
-                "runtime_profile": "legacy-context",
+                "runtime_profile": "munin-runtime",
                 "os_profile": std::env::consts::OS,
                 "valid_from": Utc::now().to_rfc3339(),
                 "valid_until": serde_json::Value::Null
             })
             .to_string(),
             actor_json: serde_json::json!({
-                "actor_id": "context",
+                "actor_id": "munin",
                 "actor_kind": "system",
                 "origin_agent_id": serde_json::Value::Null,
                 "trust_domain": "local_core"
@@ -1691,8 +1691,8 @@ impl Tracker {
 }
 
 fn get_db_path() -> Result<PathBuf> {
-    // Priority 1: Environment variable CONTEXT_DB_PATH
-    if let Ok(custom_path) = std::env::var("CONTEXT_DB_PATH") {
+    // Priority 1: Environment variable MUNIN_DB_PATH
+    if let Ok(custom_path) = std::env::var("MUNIN_DB_PATH") {
         return Ok(PathBuf::from(custom_path));
     }
 
@@ -1703,7 +1703,7 @@ fn get_db_path() -> Result<PathBuf> {
         }
     }
 
-    // Priority 3: Default platform-specific location
+    // Priority 3: Default platform-specific Munin location.
     Ok(crate::core::config::context_data_dir()?.join(HISTORY_DB))
 }
 
@@ -2076,7 +2076,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("tracking.db");
-        std::env::set_var("CONTEXT_DB_PATH", &db_path);
+        std::env::set_var("MUNIN_DB_PATH", &db_path);
 
         let timer = TimedExecution::start();
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2087,7 +2087,7 @@ mod tests {
         let recent = tracker.get_recent(5).expect("Failed to get recent");
         assert!(recent.iter().any(|r| r.context_cmd == "context test"));
 
-        std::env::remove_var("CONTEXT_DB_PATH");
+        std::env::remove_var("MUNIN_DB_PATH");
     }
 
     // 6. TimedExecution::track_passthrough records with 0 tokens
@@ -2096,7 +2096,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("tracking.db");
-        std::env::set_var("CONTEXT_DB_PATH", &db_path);
+        std::env::set_var("MUNIN_DB_PATH", &db_path);
 
         let timer = TimedExecution::start();
         timer.track_passthrough("git tag", "context git tag (passthrough)");
@@ -2113,22 +2113,22 @@ mod tests {
         assert_eq!(pt.savings_pct, 0.0);
         assert_eq!(pt.saved_tokens, 0);
 
-        std::env::remove_var("CONTEXT_DB_PATH");
+        std::env::remove_var("MUNIN_DB_PATH");
     }
 
-    // 7. get_db_path respects environment variable CONTEXT_DB_PATH
+    // 7. get_db_path respects environment variable MUNIN_DB_PATH
     #[test]
     fn test_custom_db_path_env() {
         use std::env;
         let _guard = ENV_LOCK.lock().expect("env lock");
 
-        let custom_path = env::temp_dir().join("context_test_custom.db");
-        env::set_var("CONTEXT_DB_PATH", &custom_path);
+        let custom_path = env::temp_dir().join("munin_test_custom.db");
+        env::set_var("MUNIN_DB_PATH", &custom_path);
 
         let db_path = get_db_path().expect("Failed to get db path");
         assert_eq!(db_path, custom_path);
 
-        env::remove_var("CONTEXT_DB_PATH");
+        env::remove_var("MUNIN_DB_PATH");
     }
 
     // 8. get_db_path falls back to default when no custom config
@@ -2138,7 +2138,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
 
         // Ensure no env var is set
-        env::remove_var("CONTEXT_DB_PATH");
+        env::remove_var("MUNIN_DB_PATH");
 
         let db_path = get_db_path().expect("Failed to get db path");
         assert_eq!(
@@ -2150,7 +2150,7 @@ mod tests {
                 .parent()
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str()),
-            Some("context")
+            Some("munin")
         );
     }
 
@@ -3412,8 +3412,8 @@ mod tests {
         let db_path = tmp.path().join("history.db");
         let tracker = Tracker::new_at_path(&db_path).expect("tracker");
 
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
 
         tracker
             .record_context_event(
@@ -3448,8 +3448,8 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(receipts, 1);
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
     }
 
     #[test]
@@ -3672,7 +3672,7 @@ mod tests {
     fn test_worldview_event_triggers_trust_observation_in_observe_only_mode() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_TRUST_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_TRUST_V1", "true");
 
         tracker
             .record_worldview_event_for_project(
@@ -3697,7 +3697,7 @@ mod tests {
             .expect("trust observation count");
         assert_eq!(count, 1);
 
-        std::env::remove_var("CONTEXT_MEMORYOS_TRUST_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_TRUST_V1");
     }
 
     #[test]
@@ -3742,9 +3742,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
         let project_path = current_project_path_string();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_TRUST_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_TRUST_V1", "true");
 
         tracker
             .record_context_event(
@@ -3816,9 +3816,9 @@ mod tests {
         assert_eq!(snapshot.projection_checkpoints.len(), 1);
         assert_eq!(snapshot.project_path, project_path);
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_TRUST_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_TRUST_V1");
     }
 
     #[test]
@@ -3826,10 +3826,10 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
 
-        std::env::set_var("CONTEXT_MEMORYOS_READ_MODEL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_RESUME_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_HANDOFF_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_STRICT_PROMOTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_READ_MODEL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_RESUME_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_HANDOFF_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_STRICT_PROMOTION_V1", "true");
 
         let report = tracker
             .get_memory_os_promotion_report()
@@ -3849,10 +3849,10 @@ mod tests {
             .decision_summary
             .contains("missing independent proposed-kernel proof"));
 
-        std::env::remove_var("CONTEXT_MEMORYOS_READ_MODEL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_RESUME_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_HANDOFF_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_STRICT_PROMOTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_READ_MODEL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_RESUME_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_HANDOFF_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_STRICT_PROMOTION_V1");
     }
 
     #[test]
@@ -3860,10 +3860,10 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
 
-        std::env::set_var("CONTEXT_MEMORYOS_READ_MODEL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_RESUME_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_HANDOFF_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_STRICT_PROMOTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_READ_MODEL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_RESUME_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_HANDOFF_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_STRICT_PROMOTION_V1", "true");
 
         tracker
             .record_memory_os_verification_result(&MemoryOsVerificationResultInput {
@@ -3993,10 +3993,10 @@ mod tests {
         assert!(report.resume_cutover_ready);
         assert_eq!(report.required_results.len(), 2);
 
-        std::env::remove_var("CONTEXT_MEMORYOS_READ_MODEL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_RESUME_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_HANDOFF_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_STRICT_PROMOTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_READ_MODEL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_RESUME_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_HANDOFF_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_STRICT_PROMOTION_V1");
     }
 
     #[test]
@@ -4038,7 +4038,7 @@ mod tests {
                 }],
                 exclusions: vec![],
                 reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                    recommended_command: "context context".into(),
+                    recommended_command: "munin resume --format prompt".into(),
                     current_recommendation: Some("Finish the old thing".into()),
                     first_question: "Still relevant?".into(),
                     first_verification: "Check it.".into(),
@@ -4136,11 +4136,11 @@ mod tests {
     fn test_session_onboarding_checkpoint_writes_when_read_model_enabled() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "false");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "false");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "false");
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "false");
-        std::env::set_var("CONTEXT_MEMORYOS_READ_MODEL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "false");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "false");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "false");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "false");
+        std::env::set_var("MUNIN_MEMORYOS_READ_MODEL_V1", "true");
 
         tracker
             .record_memory_os_packet_checkpoint_for_project(
@@ -4170,7 +4170,7 @@ mod tests {
                     selected_items: Vec::new(),
                     exclusions: Vec::new(),
                     reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                        recommended_command: "context context".into(),
+                        recommended_command: "munin resume --format prompt".into(),
                         current_recommendation: Some(
                             "Keep Memory OS session imports current.".into(),
                         ),
@@ -4191,11 +4191,11 @@ mod tests {
             .expect("count");
         assert_eq!(count, 1);
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_READ_MODEL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_READ_MODEL_V1");
     }
 
     #[test]
@@ -4203,9 +4203,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
         let project_path = current_project_path_string();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "true");
 
         tracker
             .record_memory_os_shadow_event(MemoryOsShadowEvent {
@@ -4312,7 +4312,7 @@ mod tests {
                     ],
                     exclusions: vec!["recent_commands budget".into()],
                     reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                        recommended_command: "context resume".into(),
+                        recommended_command: "munin resume --format prompt".into(),
                         current_recommendation: Some("Re-run the flaky resume test".into()),
                         first_question:
                             "Is this still the right next move: Re-run the flaky resume test?"
@@ -4348,19 +4348,19 @@ mod tests {
             Some("Re-run the flaky resume test")
         );
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
     }
 
     #[test]
     fn test_memory_os_action_candidates_promote_repeated_checkpoint_reentry() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "true");
 
         let generated_at = Utc::now().to_rfc3339();
         for packet_id in ["pkt-201", "pkt-202"] {
@@ -4400,7 +4400,7 @@ mod tests {
                         }],
                         exclusions: Vec::new(),
                         reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                            recommended_command: "context resume".into(),
+                            recommended_command: "munin resume --format prompt".into(),
                             current_recommendation: Some("Re-run the flaky resume test".into()),
                             first_question:
                                 "Is this still the right next move: Re-run the flaky resume test?"
@@ -4416,7 +4416,7 @@ mod tests {
         tracker
             .record_memory_os_action_execution(
                 "context-user-command",
-                "context resume",
+                "munin resume --format prompt",
                 Some("claim:resume-test"),
                 0,
             )
@@ -4424,7 +4424,7 @@ mod tests {
         tracker
             .record_memory_os_action_execution(
                 "context-user-command",
-                "context resume",
+                "munin resume --format prompt",
                 Some("claim:resume-test"),
                 0,
             )
@@ -4436,7 +4436,7 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].action.command_sig.as_deref(),
-            Some("context resume")
+            Some("munin resume --format prompt")
         );
         assert_eq!(candidates[0].precedent_count, 2);
         assert_eq!(candidates[0].success_count, 2);
@@ -4448,10 +4448,10 @@ mod tests {
         assert!(candidates[0].expires_at.is_some());
         assert_eq!(candidates[0].aging_status, "fresh");
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 
     #[test]
@@ -4459,7 +4459,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
         let project = current_project_path_string();
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "true");
 
         let cue = crate::core::memory_os::MemoryOsActionCue {
             cue_kind: "learned-habit".to_string(),
@@ -4512,7 +4512,7 @@ mod tests {
                 && rule.expires_at.is_some()
         }));
 
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 
     #[test]
@@ -4520,10 +4520,10 @@ mod tests {
     ) {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "true");
 
         for packet_id in ["pkt-301", "pkt-302"] {
             tracker
@@ -4562,7 +4562,7 @@ mod tests {
                         }],
                         exclusions: Vec::new(),
                         reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                            recommended_command: "context resume".into(),
+                            recommended_command: "munin resume --format prompt".into(),
                             current_recommendation: Some("Re-run the flaky resume test".into()),
                             first_question:
                                 "Is this still the right next move: Re-run the flaky resume test?"
@@ -4578,7 +4578,7 @@ mod tests {
         tracker
             .record_memory_os_action_execution(
                 "context-user-command",
-                "context resume",
+                "munin resume --format prompt",
                 Some("claim:resume-test"),
                 0,
             )
@@ -4586,7 +4586,7 @@ mod tests {
         tracker
             .record_memory_os_action_execution(
                 "context-user-command",
-                "context resume",
+                "munin resume --format prompt",
                 Some("claim:resume-test"),
                 0,
             )
@@ -4603,7 +4603,7 @@ mod tests {
             .rules
             .iter()
             .any(|rule| rule.action_kind == "command-default"
-                && rule.suggested_command.as_deref() == Some("context resume")));
+                && rule.suggested_command.as_deref() == Some("munin resume --format prompt")));
         assert!(user_report
             .rules
             .iter()
@@ -4621,22 +4621,22 @@ mod tests {
             .rules
             .iter()
             .any(|rule| rule.action_kind == "run_command"
-                && rule.suggested_command.as_deref() == Some("context resume")));
+                && rule.suggested_command.as_deref() == Some("munin resume --format prompt")));
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 
     #[test]
     fn test_memory_os_action_policy_view_filters_sensitive_commands() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "true");
 
         tracker
             .record_memory_os_packet_checkpoint(
@@ -4718,10 +4718,10 @@ mod tests {
                     .contains("FIRECRAWL_API_KEY")
         }));
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 
     #[test]
@@ -4850,10 +4850,10 @@ mod tests {
     fn test_latest_memory_os_action_subject_prefers_newest_matching_command() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "true");
 
         tracker
             .record_memory_os_packet_checkpoint(
@@ -4891,7 +4891,7 @@ mod tests {
                     }],
                     exclusions: Vec::new(),
                     reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                        recommended_command: "context resume".into(),
+                        recommended_command: "munin resume --format prompt".into(),
                         current_recommendation: Some("Older subject".into()),
                         first_question: "Older?".into(),
                         first_verification: "Verify older".into(),
@@ -4936,7 +4936,7 @@ mod tests {
                     }],
                     exclusions: Vec::new(),
                     reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                        recommended_command: "context resume".into(),
+                        recommended_command: "munin resume --format prompt".into(),
                         current_recommendation: Some("Newer subject".into()),
                         first_question: "Newer?".into(),
                         first_verification: "Verify newer".into(),
@@ -4946,14 +4946,14 @@ mod tests {
             .expect("new checkpoint");
 
         let subject = tracker
-            .latest_memory_os_action_subject("context resume")
+            .latest_memory_os_action_subject("munin resume --format prompt")
             .expect("latest subject");
         assert_eq!(subject.as_deref(), Some("claim:newer"));
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 
     #[test]
@@ -4961,10 +4961,10 @@ mod tests {
     {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let (_tmp, tracker) = temp_tracker();
-        std::env::set_var("CONTEXT_MEMORYOS_JOURNAL_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_CHECKPOINT_V1", "true");
-        std::env::set_var("CONTEXT_MEMORYOS_ACTION_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_JOURNAL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_DUAL_WRITE_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_CHECKPOINT_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "true");
 
         tracker
             .record_memory_os_packet_checkpoint(
@@ -5002,7 +5002,7 @@ mod tests {
                     }],
                     exclusions: Vec::new(),
                     reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                        recommended_command: "context resume".into(),
+                        recommended_command: "munin resume --format prompt".into(),
                         current_recommendation: Some("Older subject".into()),
                         first_question: "Older?".into(),
                         first_verification: "Verify older".into(),
@@ -5047,7 +5047,7 @@ mod tests {
                     }],
                     exclusions: Vec::new(),
                     reentry: crate::core::memory_os::MemoryOsCheckpointReentry {
-                        recommended_command: "context resume".into(),
+                        recommended_command: "munin resume --format prompt".into(),
                         current_recommendation: Some("Newer subjectless".into()),
                         first_question: "Newer?".into(),
                         first_verification: "Verify newer".into(),
@@ -5057,13 +5057,13 @@ mod tests {
             .expect("newer subjectless checkpoint");
 
         let subject = tracker
-            .latest_memory_os_action_subject("context resume")
+            .latest_memory_os_action_subject("munin resume --format prompt")
             .expect("latest subject");
         assert_eq!(subject, None);
 
-        std::env::remove_var("CONTEXT_MEMORYOS_JOURNAL_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_DUAL_WRITE_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_CHECKPOINT_V1");
-        std::env::remove_var("CONTEXT_MEMORYOS_ACTION_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_JOURNAL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_DUAL_WRITE_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_CHECKPOINT_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 }

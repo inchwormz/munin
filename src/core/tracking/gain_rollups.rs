@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::{
     command_project_hint, project_filter_params, Tracker, COMMAND_TELEMETRY_FILTER_SQL,
-    CONTEXT_CANONICAL_INPUT_SQL, CONTEXT_CANONICAL_OUTPUT_SQL, CONTEXT_CANONICAL_SAVED_SQL,
+    MUNIN_CANONICAL_INPUT_SQL, MUNIN_CANONICAL_OUTPUT_SQL, MUNIN_CANONICAL_SAVED_SQL,
 };
 
 /// Aggregated statistics across all recorded commands.
@@ -644,9 +644,9 @@ impl Tracker {
             command_until_filter = command_until_filter,
             context_until_filter = context_until_filter,
             command_filter = COMMAND_TELEMETRY_FILTER_SQL,
-            input_sql = CONTEXT_CANONICAL_INPUT_SQL,
-            output_sql = CONTEXT_CANONICAL_OUTPUT_SQL,
-            saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+            input_sql = MUNIN_CANONICAL_INPUT_SQL,
+            output_sql = MUNIN_CANONICAL_OUTPUT_SQL,
+            saved_sql = MUNIN_CANONICAL_SAVED_SQL,
         )
     }
 
@@ -1170,9 +1170,9 @@ impl Tracker {
                 COALESCE(SUM(failure_count), 0)
              FROM context_events
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)",
-            input_sql = CONTEXT_CANONICAL_INPUT_SQL,
-            output_sql = CONTEXT_CANONICAL_OUTPUT_SQL,
-            saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+            input_sql = MUNIN_CANONICAL_INPUT_SQL,
+            output_sql = MUNIN_CANONICAL_OUTPUT_SQL,
+            saved_sql = MUNIN_CANONICAL_SAVED_SQL,
         );
         let (count, estimated_source_tokens, rendered_tokens, saved, claims, failures): (
             i64,
@@ -1223,9 +1223,9 @@ impl Tracker {
              FROM context_events
              WHERE timestamp >= ?3
                AND (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)",
-            input_sql = CONTEXT_CANONICAL_INPUT_SQL,
-            output_sql = CONTEXT_CANONICAL_OUTPUT_SQL,
-            saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+            input_sql = MUNIN_CANONICAL_INPUT_SQL,
+            output_sql = MUNIN_CANONICAL_OUTPUT_SQL,
+            saved_sql = MUNIN_CANONICAL_SAVED_SQL,
         );
         let (count, estimated_source_tokens, rendered_tokens, saved, claims, failures): (
             i64,
@@ -1300,8 +1300,8 @@ impl Tracker {
                 SELECT {input_sql} AS input_tokens, {saved_sql} AS saved_tokens FROM context_events
               )",
             COMMAND_TELEMETRY_FILTER_SQL,
-            input_sql = CONTEXT_CANONICAL_INPUT_SQL,
-            saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+            input_sql = MUNIN_CANONICAL_INPUT_SQL,
+            saved_sql = MUNIN_CANONICAL_SAVED_SQL,
         );
         let (total_input, total_saved): (i64, i64) = self
             .conn
@@ -1324,7 +1324,7 @@ impl Tracker {
                 SELECT {saved_sql} AS saved_tokens FROM context_events
               )",
             COMMAND_TELEMETRY_FILTER_SQL,
-            saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+            saved_sql = MUNIN_CANONICAL_SAVED_SQL,
         );
         let saved: i64 = self.conn.query_row(&query, [], |row| row.get(0))?;
         Ok(saved)
@@ -1343,7 +1343,7 @@ impl Tracker {
               )
              WHERE timestamp >= ?1",
             COMMAND_TELEMETRY_FILTER_SQL,
-            saved_sql = CONTEXT_CANONICAL_SAVED_SQL,
+            saved_sql = MUNIN_CANONICAL_SAVED_SQL,
         );
         let saved: i64 = self.conn.query_row(&query, params![ts], |row| row.get(0))?;
         Ok(saved)

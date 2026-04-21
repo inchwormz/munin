@@ -18,6 +18,7 @@ pub use types::{
 use crate::core::tracking::Tracker;
 use crate::core::utils::{current_project_root_string, truncate};
 use crate::core::worldview;
+use crate::runtime_context::{packet_from_session_brain, render_packet, RuntimeContextRenderMode};
 use anyhow::{anyhow, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,7 @@ pub fn build_current_session_brain() -> Result<SessionBrain> {
         8,
         6,
     )?;
+    let compiled = build::SessionBrainCompiledInput::from(&compiled);
     let brain = build_session_brain(
         &tracker,
         &compiled,
@@ -84,12 +86,21 @@ pub fn current_source_status() -> Option<String> {
 pub fn render_session_brain(brain: &SessionBrain, mode: SessionBrainRenderMode) -> Result<String> {
     Ok(match mode {
         SessionBrainRenderMode::Text => render_text(brain),
-        SessionBrainRenderMode::Json => serde_json::to_string_pretty(brain)?,
+        SessionBrainRenderMode::Json => render_packet(
+            &packet_from_session_brain(brain),
+            RuntimeContextRenderMode::Json,
+        )?,
         SessionBrainRenderMode::Prompt => render_prompt(brain),
     })
 }
 
 fn render_text(brain: &SessionBrain) -> String {
+    if brain.meta.source_status != "live" {
+        let packet = packet_from_session_brain(brain);
+        return render_packet(&packet, RuntimeContextRenderMode::Text)
+            .unwrap_or_else(|_| "Runtime context render failed.".to_string());
+    }
+
     let mut lines = vec![
         format!("Session Brain [{}]", brain.meta.provider.as_str()),
         format!("project: {}", brain.meta.project_root),
@@ -98,12 +109,6 @@ fn render_text(brain: &SessionBrain) -> String {
         lines.push(format!("session: {}", session_id));
     }
     lines.push(format!("session source: {}", brain.meta.source_status));
-    if let Some(path) = brain.meta.transcript_source_path.as_deref() {
-        lines.push(format!("transcript: {}", path));
-    }
-    if let Some(modified_at) = brain.meta.transcript_modified_at.as_deref() {
-        lines.push(format!("transcript modified: {}", modified_at));
-    }
     if brain.meta.source_status != "live" && brain.meta.source_status != "none" {
         lines.push(format!(
             "freshness warning: Session Brain is reading {} context, not the live window.",
@@ -155,6 +160,9 @@ fn render_text(brain: &SessionBrain) -> String {
     if !brain.user.brief.is_empty() {
         lines.push(format!("- brief: {}", brain.user.brief));
     }
+    if !brain.user.overview.is_empty() {
+        lines.push(format!("- overview: {}", brain.user.overview));
+    }
     if !brain.user.profile.is_empty() {
         lines.push(format!("- profile: {}", brain.user.profile));
     }
@@ -171,6 +179,12 @@ fn render_text(brain: &SessionBrain) -> String {
 }
 
 fn render_prompt(brain: &SessionBrain) -> String {
+    if brain.meta.source_status != "live" {
+        let packet = packet_from_session_brain(brain);
+        return render_packet(&packet, RuntimeContextRenderMode::Prompt)
+            .unwrap_or_else(|_| "<runtime_context_v1 error=\"render_failed\" />".to_string());
+    }
+
     let mut lines = vec![format!(
         "<session_brain provider=\"{}\" session_id=\"{}\" built_at=\"{}\" source_status=\"{}\">",
         brain.meta.provider.as_str(),
@@ -271,14 +285,6 @@ fn render_prompt(brain: &SessionBrain) -> String {
     }
     lines.push("</guidance>".to_string());
 
-    lines.push("<messages>".to_string());
-    for message in brain.messages.user.iter().take(6) {
-        lines.push(format!("- user: {}", truncate(&message.text, 220)));
-    }
-    for message in brain.messages.assistant.iter().take(4) {
-        lines.push(format!("- assistant: {}", truncate(&message.text, 220)));
-    }
-    lines.push("</messages>".to_string());
     lines.push("</session_brain>".to_string());
     lines.join("\n")
 }
@@ -401,14 +407,41 @@ mod tests {
     }
 
     #[test]
-    fn prompt_renderer_orders_distilled_sections_before_messages_and_caps_raw_evidence() {
+    fn prompt_renderer_uses_compiled_sections_without_raw_messages() {
         let rendered = render_prompt(&sample_brain());
 
-        assert!(rendered.find("<agenda>").unwrap() < rendered.find("<messages>").unwrap());
         assert!(rendered.contains("- current ask: Fix session brain semantics"));
-        assert!(!rendered.contains("user message 6"));
-        assert!(rendered.contains("user message 5"));
-        assert!(!rendered.contains("assistant message 4"));
-        assert!(rendered.contains("assistant message 3"));
+        assert!(rendered.contains("<project>"));
+        assert!(rendered.contains("<strategy>"));
+        assert!(rendered.contains("<user_operating_model>"));
+        assert!(!rendered.contains("<messages>"));
+        assert!(!rendered.contains("user message"));
+        assert!(!rendered.contains("assistant message"));
+        assert!(!rendered.contains("C:/repo/session.jsonl"));
+    }
+
+    #[test]
+    fn json_renderer_uses_public_runtime_packet_without_raw_transcript() {
+        let rendered =
+            render_session_brain(&sample_brain(), SessionBrainRenderMode::Json).expect("render");
+
+        assert!(rendered.contains("\"version\""));
+        assert!(!rendered.contains("C:/repo/session.jsonl"));
+        assert!(!rendered.contains("user message"));
+        assert!(!rendered.contains("transcriptSourcePath"));
+    }
+
+    #[test]
+    fn non_live_prompt_renderer_redirects_to_runtime_context_packet() {
+        let mut brain = sample_brain();
+        brain.meta.source_status = "fallback-latest".to_string();
+
+        let rendered = render_prompt(&brain);
+
+        assert!(rendered.contains("<runtime_context_v1"));
+        assert!(rendered.contains("<redirect>"));
+        assert!(rendered.contains("munin resume --format prompt"));
+        assert!(!rendered.contains("<session_brain"));
+        assert!(!rendered.contains("- current ask: Fix session brain semantics"));
     }
 }

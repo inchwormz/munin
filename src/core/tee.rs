@@ -1,6 +1,6 @@
 //! Raw output recovery -- saves unfiltered output to disk on command failure.
 
-use super::constants::CONTEXT_DATA_DIR;
+use super::constants::MUNIN_DATA_DIR;
 use crate::core::config::Config;
 use std::path::PathBuf;
 
@@ -37,17 +37,16 @@ fn sanitize_slug(slug: &str) -> String {
 /// Get the tee directory, respecting config and env overrides.
 fn get_tee_dir(config: &Config) -> Option<PathBuf> {
     // Env var override
-    if let Ok(dir) = std::env::var("CONTEXT_TEE_DIR") {
+    if let Ok(dir) = std::env::var("MUNIN_TEE_DIR") {
         return Some(PathBuf::from(dir));
     }
-
     // Config override
     if let Some(ref dir) = config.tee.directory {
         return Some(dir.clone());
     }
 
-    // Default: ~/.local/share/context/tee/
-    dirs::data_local_dir().map(|d| d.join(CONTEXT_DATA_DIR).join("tee"))
+    // Default: ~/.local/share/munin/tee/
+    dirs::data_local_dir().map(|d| d.join(MUNIN_DATA_DIR).join("tee"))
 }
 
 /// Rotate old tee files: keep only the last `max_files`, delete oldest.
@@ -143,8 +142,8 @@ fn write_tee_file(
 /// Write raw output to tee file if conditions are met.
 /// Returns file path on success, None if skipped/failed.
 pub fn tee_raw(raw: &str, command_slug: &str, exit_code: i32) -> Option<PathBuf> {
-    // Check CONTEXT_TEE=0 env override (disable)
-    if std::env::var("CONTEXT_TEE").ok().as_deref() == Some("0") {
+    // Check MUNIN_TEE=0 env override (disable)
+    if std::env::var("MUNIN_TEE").ok().as_deref() == Some("0") {
         return None;
     }
 
@@ -191,8 +190,8 @@ pub fn tee_and_hint(raw: &str, command_slug: &str, exit_code: i32) -> Option<Str
 /// Used by AWS filters when FilterResult.truncated = true, ensuring
 /// the LLM has access to full untruncated output via the hint path.
 pub fn force_tee_hint(raw: &str, command_slug: &str) -> Option<String> {
-    // Check CONTEXT_TEE=0 env override (disable)
-    if std::env::var("CONTEXT_TEE").ok().as_deref() == Some("0") {
+    // Check MUNIN_TEE=0 env override (disable)
+    if std::env::var("MUNIN_TEE").ok().as_deref() == Some("0") {
         return None;
     }
 
@@ -449,11 +448,11 @@ directory = "/tmp/context-tee"
 
     #[test]
     fn test_force_tee_hint_respects_env_disable() {
-        // When CONTEXT_TEE=0, force_tee_hint should return None
-        std::env::set_var("CONTEXT_TEE", "0");
+        // When MUNIN_TEE=0, force_tee_hint should return None
+        std::env::set_var("MUNIN_TEE", "0");
         let large_output = "x".repeat(1000);
         let hint = force_tee_hint(&large_output, "test_cmd");
-        std::env::remove_var("CONTEXT_TEE");
-        assert!(hint.is_none(), "Should respect CONTEXT_TEE=0");
+        std::env::remove_var("MUNIN_TEE");
+        assert!(hint.is_none(), "Should respect MUNIN_TEE=0");
     }
 }

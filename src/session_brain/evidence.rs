@@ -24,7 +24,7 @@ impl SessionEvidence {
             summary: self.summary.clone(),
             source: self.source.clone(),
             timestamp: self.timestamp.clone(),
-            evidence: self.evidence.clone(),
+            evidence: public_evidence(&self.evidence),
         }
     }
 
@@ -41,6 +41,22 @@ impl SessionEvidence {
     }
 }
 
+fn public_evidence(evidence: &[String]) -> Vec<String> {
+    evidence
+        .iter()
+        .filter(|item| !looks_like_raw_transcript_ref(item))
+        .take(3)
+        .cloned()
+        .collect()
+}
+
+fn looks_like_raw_transcript_ref(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase().replace('\\', "/");
+    lowered.contains(".jsonl")
+        || lowered.contains("/.codex/sessions/")
+        || lowered.contains("/.claude/projects/")
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SessionTaskHint {
     pub value: String,
@@ -49,6 +65,7 @@ pub(crate) struct SessionTaskHint {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionFocus {
+    pub saw_user_message: bool,
     pub current_ask_candidates: Vec<SessionEvidence>,
     pub redirects: Vec<SessionEvidence>,
     pub suppression_signals: Vec<SessionEvidence>,
@@ -95,9 +112,14 @@ impl SessionFocus {
     pub(crate) fn has_live_user_intent(&self) -> bool {
         self.preferred_live_goal().is_some()
             || self
+                .current_ask_candidates
+                .iter()
+                .any(|item| item.role == "user")
+            || self.redirects.iter().any(|item| item.role == "user")
+            || self
                 .next_move_candidates
                 .iter()
-                .any(|item| item.role == "user" && is_live_user_task_signal(item))
+                .any(|item| item.role == "user")
     }
 
     pub(crate) fn suppresses_machine_fallback(&self) -> bool {
@@ -193,6 +215,14 @@ fn classify_message(
     message: &SessionBrainMessage,
     recency: i32,
 ) {
+    if message.role == "user" && !message.text.trim().is_empty() {
+        focus.saw_user_message = true;
+    }
+
+    if message.role == "assistant" && is_assistant_session_brain_echo(&message.text) {
+        return;
+    }
+
     let sections = parse_message_sections(&message.text);
     for section in sections {
         let section_key = normalize_section_label(&section.label);
@@ -932,6 +962,12 @@ fn looks_like_symbol(text: &str) -> bool {
 
 fn looks_like_current_ask(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
+    if text.trim_end().ends_with(':') && text.split_whitespace().count() <= 8 {
+        return false;
+    }
+    if lowered.trim_start().starts_with('$') {
+        return true;
+    }
     if matches!(
         lowered.as_str(),
         "approve" | "approved" | "ralplan-dr" | "adr" | "handoff"
@@ -951,6 +987,9 @@ fn looks_like_current_ask(text: &str) -> bool {
         || lowered.starts_with("what ")
         || lowered.starts_with("which ")
         || lowered.starts_with("ensure ")
+        || lowered.starts_with("no i want you to ")
+        || lowered.starts_with("i want you to ")
+        || lowered.contains("i want you to fix")
 }
 
 fn starts_with_action_verb(lowered: &str) -> bool {
@@ -978,7 +1017,9 @@ fn starts_with_action_verb(lowered: &str) -> bool {
 
 fn looks_like_redirect(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
-    (lowered.contains("actually") || lowered.contains("instead"))
+    (lowered.starts_with("actually ")
+        || lowered.contains(" no, actually ")
+        || lowered.contains(" instead"))
         && (starts_with_action_verb(&lowered)
             || lowered.starts_with("show ")
             || lowered.starts_with("run ")
@@ -993,6 +1034,7 @@ fn looks_like_dissatisfaction(text: &str) -> bool {
         || lowered.contains("wrong task")
         || lowered.contains("does not represent what i asked")
         || lowered.contains("doesn't represent what i asked")
+        || lowered.contains("garbage")
         || lowered.contains("almost useless")
         || lowered.contains("is almost useless")
         || lowered.contains("useless for")
@@ -1146,10 +1188,41 @@ fn is_assistant_progress_chatter(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     lowered.starts_with("i'm checking")
         || lowered.starts_with("i am checking")
+        || lowered.contains("i'm checking")
+        || lowered.contains("i’m checking")
+        || lowered.contains("i am checking")
         || lowered.starts_with("i'm pulling")
         || lowered.starts_with("i am pulling")
         || lowered.starts_with("i'm rerunning")
         || lowered.starts_with("i am rerunning")
+        || lowered.contains("i'm rerunning")
+        || lowered.contains("i’m rerunning")
+        || lowered.contains("i am rerunning")
+        || lowered.contains("i'm staging")
+        || lowered.contains("i’m staging")
+        || lowered.contains("i am staging")
+        || lowered.contains("i'm fixing")
+        || lowered.contains("i’m fixing")
+        || lowered.contains("i am fixing")
+        || lowered.contains("i'm going")
+        || lowered.contains("i’m going")
+        || lowered.contains("i am going")
+        || lowered.contains("i'm building")
+        || lowered.contains("i’m building")
+        || lowered.contains("i am building")
+        || lowered.contains("running the real")
+        || lowered.contains("verification suite passed")
+        || lowered.starts_with("the debug cli now reports")
+        || lowered.starts_with("continuing ralph as a completion loop")
+        || lowered.contains("i’m treating")
+        || lowered.contains("i'm treating")
+        || lowered.contains("i am treating")
+        || lowered.starts_with("focused tests pass")
+        || lowered.starts_with("the garbage has")
+        || lowered.starts_with("status shows")
+        || lowered.starts_with("architect found")
+        || lowered.starts_with("the final architect rejected")
+        || lowered.starts_with("the two architectural blockers")
         || lowered.starts_with("i'm waiting")
         || lowered.starts_with("i am waiting")
         || lowered.starts_with("i've tightened")
@@ -1159,6 +1232,16 @@ fn is_assistant_progress_chatter(text: &str) -> bool {
         || lowered.contains("manual surface checks")
         || lowered.contains("competing test job")
         || lowered.contains("which `context` binary")
+}
+
+fn is_assistant_session_brain_echo(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("actual details from `munin brain --format prompt`")
+        || lowered.contains("source_status:")
+        || lowered.contains("session brain sourcestatus:")
+        || lowered.contains("<session_brain")
+        || lowered.contains("<runtime_context_v1")
+        || lowered.contains("current agenda reported by munin")
 }
 
 fn is_command_echo(text: &str) -> bool {
@@ -1400,6 +1483,158 @@ mod tests {
                 .map(|item| item.summary.as_str()),
             Some("make it a simple skill that runs that command please")
         );
+    }
+
+    #[test]
+    fn root_level_skill_invocation_becomes_current_ask() {
+        let focus = build_session_focus(&[message("user", "$munin-brain")], &[]);
+
+        assert_eq!(
+            focus
+                .current_ask_candidates
+                .first()
+                .map(|item| item.summary.as_str()),
+            Some("$munin-brain")
+        );
+        assert!(focus.suppresses_machine_fallback());
+    }
+
+    #[test]
+    fn table_heading_ending_with_colon_is_not_current_ask() {
+        let focus = build_session_focus(
+            &[message(
+                "user",
+                "What the 5 UserPromptSubmit hooks actually do:",
+            )],
+            &[],
+        );
+
+        assert!(focus.current_ask_candidates.is_empty());
+        assert!(focus.redirects.is_empty());
+    }
+
+    #[test]
+    fn dollar_skill_with_arguments_becomes_current_ask() {
+        let focus = build_session_focus(
+            &[message(
+                "user",
+                "$ralph to completion, boil the lake, don't come back until everything is complete",
+            )],
+            &[],
+        );
+
+        assert_eq!(
+            focus
+                .current_ask_candidates
+                .first()
+                .map(|item| item.summary.as_str()),
+            Some(
+                "$ralph to completion, boil the lake, don't come back until everything is complete"
+            )
+        );
+    }
+
+    #[test]
+    fn dissatisfaction_with_garbage_suppresses_machine_fallback() {
+        let focus = build_session_focus(
+            &[message("user", "ALmost all of this is absolute garbage")],
+            &[],
+        );
+
+        assert!(focus.suppression_signals.iter().any(|item| item
+            .summary
+            .to_ascii_lowercase()
+            .contains("absolute garbage")));
+        assert!(focus.suppresses_machine_fallback());
+    }
+
+    #[test]
+    fn assistant_rerun_progress_does_not_become_finding() {
+        let focus = build_session_focus(
+            &[],
+            &[message(
+                "assistant",
+                "The full verification suite passed again after the fast user-context change. I’m rerunning the real `brain`/`resume` prompt timings with the fixed debug binary and no session env vars.",
+            )],
+        );
+
+        assert!(focus.findings.is_empty());
+        assert!(focus.verified_facts.is_empty());
+        assert!(focus.next_move_candidates.is_empty());
+    }
+
+    #[test]
+    fn assistant_build_progress_does_not_become_finding() {
+        let focus = build_session_focus(
+            &[],
+            &[message(
+                "assistant",
+                "The debug CLI now reports `source=live`, keeps the current ask, has no bogus findings/blockers/verified facts, and points at the Munin worktree. Full tests pass. I’m building release and updating the live binary.",
+            )],
+        );
+
+        assert!(focus.findings.is_empty());
+        assert!(focus.verified_facts.is_empty());
+    }
+
+    #[test]
+    fn assistant_staging_progress_does_not_become_blocker_or_finding() {
+        let focus = build_session_focus(
+            &[],
+            &[message(
+                "assistant",
+                "Architect found another real staging blocker: `src/core/worldview.rs` had the correct Munin changes in the working tree but was not staged. I’m staging it and rerunning the final sign-off.",
+            )],
+        );
+
+        assert!(focus.findings.is_empty());
+        assert!(focus.blockers.is_empty());
+    }
+
+    #[test]
+    fn assistant_ralph_progress_does_not_become_finding() {
+        let focus = build_session_focus(
+            &[],
+            &[message(
+                "assistant",
+                "Continuing Ralph as a completion loop. I’m treating “complete” as the full Munin end-user runtime-context cutover.",
+            )],
+        );
+
+        assert!(focus.findings.is_empty());
+        assert!(focus.verified_facts.is_empty());
+    }
+
+    #[test]
+    fn assistant_session_brain_readout_does_not_reenter_evidence() {
+        let focus = build_session_focus(
+            &[],
+            &[message(
+                "assistant",
+                "Here are the actual details from `munin brain --format prompt` that I saw.\n\nsource_status: live\n\nAgenda\ncurrent ask: Resolve active failure: cargo test: 1 errors\n\nState\nfinding: cargo test: 1 errors",
+            )],
+        );
+
+        assert!(focus.current_ask_candidates.is_empty());
+        assert!(focus.findings.is_empty());
+        assert!(focus.blockers.is_empty());
+        assert!(focus.verified_facts.is_empty());
+    }
+
+    #[test]
+    fn assistant_runtime_context_packet_does_not_reenter_evidence() {
+        let focus = build_session_focus(
+            &[],
+            &[message(
+                "assistant",
+                "<runtime_context_v1 surface=\"brain\" source_mode=\"fallback-latest\"><redirect><reason>Session Brain is not live.</reason><recommended_command>munin resume --format prompt</recommended_command></redirect></runtime_context_v1>",
+            )],
+        );
+
+        assert!(focus.current_ask_candidates.is_empty());
+        assert!(focus.findings.is_empty());
+        assert!(focus.blockers.is_empty());
+        assert!(focus.verified_facts.is_empty());
     }
 
     #[test]

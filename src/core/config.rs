@@ -1,6 +1,6 @@
 //! Reads user settings from config.toml.
 
-use super::constants::{CONFIG_TOML, CONTEXT_DATA_DIR, DEFAULT_HISTORY_DAYS};
+use super::constants::{CONFIG_TOML, DEFAULT_HISTORY_DAYS, MUNIN_DATA_DIR};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -386,40 +386,40 @@ fn env_flag(name: &str) -> Option<bool> {
 /// Resolve memory OS feature flags from config with optional env overrides for local experimentation.
 pub fn memory_os() -> MemoryOsConfig {
     let mut config = Config::load().map(|c| c.memory_os).unwrap_or_default();
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_JOURNAL_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_JOURNAL_V1") {
         config.journal_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_DUAL_WRITE_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_DUAL_WRITE_V1") {
         config.dual_write_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_PROOF_CAPTURE_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_PROOF_CAPTURE_V1") {
         config.proof_capture_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_OPENLOOP_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_OPENLOOP_V1") {
         config.openloop_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_CHECKPOINT_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_CHECKPOINT_V1") {
         config.checkpoint_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_ACTION_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_ACTION_V1") {
         config.action_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_TRUST_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_TRUST_V1") {
         config.trust_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_STRICT_PROMOTION_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_STRICT_PROMOTION_V1") {
         config.strict_promotion_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_READ_MODEL_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_READ_MODEL_V1") {
         config.read_model_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_DUAL_RUN_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_DUAL_RUN_V1") {
         config.dual_run_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_RESUME_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_RESUME_V1") {
         config.resume_v1 = value;
     }
-    if let Some(value) = env_flag("CONTEXT_MEMORYOS_HANDOFF_V1") {
+    if let Some(value) = env_flag("MUNIN_MEMORYOS_HANDOFF_V1") {
         config.handoff_v1 = value;
     }
     config
@@ -458,22 +458,19 @@ impl Config {
 }
 
 pub fn context_config_dir() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("CONTEXT_CONFIG_DIR") {
+    if let Ok(path) = std::env::var("MUNIN_CONFIG_DIR") {
         return Ok(PathBuf::from(path));
     }
     let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    Ok(config_dir.join(CONTEXT_DATA_DIR))
+    Ok(config_dir.join(MUNIN_DATA_DIR))
 }
 
 pub fn context_data_dir() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("MUNIN_DATA_DIR") {
         return Ok(PathBuf::from(path));
     }
-    if let Ok(path) = std::env::var("CONTEXT_DATA_DIR_PATH") {
-        return Ok(PathBuf::from(path));
-    }
     let data_dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    Ok(data_dir.join(CONTEXT_DATA_DIR))
+    Ok(data_dir.join(MUNIN_DATA_DIR))
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -649,19 +646,19 @@ stale_claim_minutes = 120
     #[test]
     fn test_context_dir_helpers_respect_env_overrides() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        std::env::set_var("CONTEXT_CONFIG_DIR", "C:/tmp/context-config");
-        std::env::set_var("CONTEXT_DATA_DIR_PATH", "C:/tmp/context-data");
+        std::env::set_var("MUNIN_CONFIG_DIR", "C:/tmp/munin-config");
+        std::env::set_var("MUNIN_DATA_DIR", "C:/tmp/munin-data");
 
         assert_eq!(
             context_config_dir().expect("config dir"),
-            PathBuf::from("C:/tmp/context-config")
+            PathBuf::from("C:/tmp/munin-config")
         );
         assert_eq!(
             context_data_dir().expect("data dir"),
-            PathBuf::from("C:/tmp/context-data")
+            PathBuf::from("C:/tmp/munin-data")
         );
 
-        std::env::remove_var("CONTEXT_CONFIG_DIR");
-        std::env::remove_var("CONTEXT_DATA_DIR_PATH");
+        std::env::remove_var("MUNIN_CONFIG_DIR");
+        std::env::remove_var("MUNIN_DATA_DIR");
     }
 }

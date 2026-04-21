@@ -1,0 +1,42 @@
+{
+  "bundle_version": "v1",
+  "description": "Munin-owned runtime integration assets for Claude and Codex.",
+  "assets": [
+    {
+      "path": "templates/umbrella-skill.md.tmpl",
+      "kind": "skill-template"
+    },
+    {
+      "path": "templates/narrow-skill.md.tmpl",
+      "kind": "skill-template"
+    },
+    {
+      "path": "templates/install-quick-skill.md.tmpl",
+      "kind": "skill-template"
+    },
+    {
+      "path": "templates/claude-umbrella-command.md.tmpl",
+      "kind": "claude-command-template"
+    },
+    {
+      "path": "templates/claude-narrow-command.md.tmpl",
+      "kind": "claude-command-template"
+    },
+    {
+      "path": "templates/claude-install-quick-command.md.tmpl",
+      "kind": "claude-command-template"
+    },
+    {
+      "path": "templates/claude-install-prose-command.md.tmpl",
+      "kind": "claude-command-template"
+    },
+    {
+      "path": "claude/munin-runtime.js",
+      "kind": "claude-user-prompt-submit-hook"
+    },
+    {
+      "path": "codex/plugin.json.tmpl",
+      "kind": "codex-plugin-manifest"
+    }
+  ]
+}

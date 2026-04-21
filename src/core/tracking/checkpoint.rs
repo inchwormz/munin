@@ -94,7 +94,7 @@ impl Tracker {
             })
             .to_string(),
             actor_json: serde_json::json!({
-                "actor_id": "context",
+                "actor_id": "munin",
                 "actor_kind": "system",
                 "origin_agent_id": serde_json::Value::Null,
                 "trust_domain": "local_core"
