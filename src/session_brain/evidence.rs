@@ -507,6 +507,8 @@ fn evidence_source_class(message: &SessionBrainMessage, evidence_kind: &str) -> 
 }
 
 fn parse_message_sections(text: &str) -> Vec<SectionBlock> {
+    let unwrapped = unwrap_claude_slash_command(text);
+    let text = unwrapped.as_deref().unwrap_or(text);
     let lines = text.lines().collect::<Vec<_>>();
     let mut sections = Vec::new();
     let mut current_label = "root".to_string();
@@ -556,6 +558,39 @@ fn parse_message_sections(text: &str) -> Vec<SectionBlock> {
     }
 
     sections
+}
+
+fn unwrap_claude_slash_command(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("<command-message>") {
+        return None;
+    }
+    let args_open_tag = "<command-args>";
+    let args_close_tag = "</command-args>";
+    let args_open = trimmed.find(args_open_tag)?;
+    let args_close = trimmed.rfind(args_close_tag)?;
+    let args_start = args_open + args_open_tag.len();
+    if args_close <= args_start {
+        return None;
+    }
+    let args = trimmed[args_start..args_close].trim();
+    if args.is_empty() {
+        return None;
+    }
+    let name_open_tag = "<command-name>";
+    let name_close_tag = "</command-name>";
+    let name = match (trimmed.find(name_open_tag), trimmed.find(name_close_tag)) {
+        (Some(start), Some(end)) if end > start + name_open_tag.len() => {
+            trimmed[start + name_open_tag.len()..end].trim()
+        }
+        _ => "",
+    };
+    let body = if name.is_empty() {
+        args.to_string()
+    } else {
+        format!("{}: {}", name, args)
+    };
+    Some(format!("Task Statement\n{}", body))
 }
 
 fn classify_heading(trimmed: &str, next_line: Option<&str>) -> Option<(String, Option<String>)> {
@@ -746,7 +781,20 @@ fn same_item(left: &SessionEvidence, right: &SessionEvidence) -> bool {
         .filter(|token| right.subject_tokens.contains(token))
         .count();
 
-    overlap >= 2
+    if overlap < 2 {
+        return false;
+    }
+
+    // An overlap of N shared tokens only implies "same item" when N represents a
+    // meaningful fraction of the smaller item's distinctive tokens. Otherwise a
+    // long assistant message that happens to mention a couple of common words
+    // (e.g. "live", "user") — or that quotes an unrelated earlier user message
+    // verbatim — will spuriously supersede a genuinely separate user task.
+    let min_len = left.subject_tokens.len().min(right.subject_tokens.len());
+    if min_len == 0 {
+        return false;
+    }
+    overlap * 2 >= min_len
 }
 
 fn normalize_summary(text: &str) -> String {
@@ -1536,6 +1584,92 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_slash_command_wrapper_surfaces_as_current_ask() {
+        let user = vec![
+            message_with_source(
+                "user",
+                "What is the most in depth style of bug investigation for rust products?",
+                "root",
+                "2026-04-20T19:21:02Z",
+                13,
+            ),
+            message_with_source(
+                "user",
+                "<command-message>investigate</command-message>\n<command-name>/investigate</command-name>\n<command-args>Apply this approach to the session brain bug. Track the live session data and user ask.</command-args>",
+                "root",
+                "2026-04-20T19:24:18Z",
+                35,
+            ),
+        ];
+
+        let focus = build_session_focus(&user, &[]);
+        let top = focus
+            .current_ask_candidates
+            .first()
+            .map(|item| item.summary.as_str())
+            .unwrap_or("<empty>");
+        assert!(
+            top.contains("session brain bug"),
+            "later /investigate ask should outrank earlier plain user message, got: {top}"
+        );
+        assert!(
+            !top.starts_with("What is the most in depth"),
+            "earlier plain-text user ask should not win, got: {top}"
+        );
+    }
+
+    #[test]
+    fn slash_command_ask_survives_assistant_chatter_that_mentions_common_words() {
+        // Regression for the "current ask goes missing as the session lengthens" bug:
+        // a long assistant message about a *different* task (that happens to mention
+        // "live" and "user" while quoting an earlier user message) must not
+        // supersede the most recent user slash-command ask. The ratio check in
+        // same_item keeps this cross-task pollution from nuking current_ask.
+        let user = vec![
+            message_with_source(
+                "user",
+                "What is the most in depth style of bug investigation for rust products?",
+                "root",
+                "2026-04-20T19:21:02Z",
+                13,
+            ),
+            message_with_source(
+                "user",
+                "<command-message>investigate</command-message>\n<command-name>/investigate</command-name>\n<command-args>Apply this approach to the session brain bug. Track the live session data and user ask.</command-args>",
+                "root",
+                "2026-04-20T19:24:18Z",
+                35,
+            ),
+        ];
+        let assistant = vec![message_with_source(
+            "assistant",
+            "Good — `source_status=\"live\"` is fixed. But the `current ask` is showing the *first* user message (\"What is the most in depth style...\"), not the most recent (`/investigate ...`). That's the second half of the user's complaint (\"user ask etc\"). Let me trace the agenda logic.",
+            "root",
+            "2026-04-20T19:38:58Z",
+            462,
+        )];
+
+        let focus = build_session_focus(&user, &assistant);
+        let top = focus
+            .current_ask_candidates
+            .first()
+            .map(|item| item.summary.as_str())
+            .unwrap_or("<empty>");
+        assert!(
+            top.contains("session brain bug"),
+            "assistant chatter that mentions 'live'/'user' must not nuke the later slash-command ask, got: {top}"
+        );
+        assert_eq!(
+            focus
+                .preferred_live_goal()
+                .as_deref()
+                .map(|s| s.contains("session brain bug")),
+            Some(true),
+            "preferred_live_goal should surface the slash-command ask"
+        );
+    }
+
+    #[test]
     fn dissatisfaction_with_garbage_suppresses_machine_fallback() {
         let focus = build_session_focus(
             &[message("user", "ALmost all of this is absolute garbage")],
@@ -1636,6 +1770,55 @@ mod tests {
         assert!(focus.findings.is_empty());
         assert!(focus.blockers.is_empty());
         assert!(focus.verified_facts.is_empty());
+    }
+
+    #[test]
+    fn same_item_rejects_low_ratio_token_overlap() {
+        // "live" and "user" are common enough that they shouldn't alone mark two
+        // items as the same. The shared-token count must be a meaningful fraction
+        // of the smaller item's distinctive tokens.
+        let left = SessionEvidence {
+            summary: "/investigate: Apply this approach to the session brain bug. Track the live session data and user ask.".to_string(),
+            source: "user-message".to_string(),
+            timestamp: Some("2026-04-20T19:24:18Z".to_string()),
+            evidence: vec![],
+            role: "user".to_string(),
+            priority: 460,
+            bucket: "current_ask".to_string(),
+            source_class: "live_transcript".to_string(),
+            evidence_kind: "task".to_string(),
+            line_number: 35,
+            subject_tokens: extract_subject_tokens("/investigate: Apply this approach to the session brain bug. Track the live session data and user ask."),
+        };
+        let right = SessionEvidence {
+            summary: "Good — source_status=\"live\" is fixed. But the current ask is showing the first user message (\"What is the most in depth style...\").".to_string(),
+            source: "assistant-message".to_string(),
+            timestamp: Some("2026-04-20T19:38:58Z".to_string()),
+            evidence: vec![],
+            role: "assistant".to_string(),
+            priority: 255,
+            bucket: "resolved_blocker".to_string(),
+            source_class: "live_transcript".to_string(),
+            evidence_kind: "blocker_clear".to_string(),
+            line_number: 462,
+            subject_tokens: extract_subject_tokens("Good — source_status=\"live\" is fixed. But the current ask is showing the first user message (\"What is the most in depth style...\")."),
+        };
+
+        assert!(!same_item(&left, &right));
+    }
+
+    #[test]
+    fn unwrap_claude_slash_command_returns_task_statement_form() {
+        let text = "<command-message>investigate</command-message>\n<command-name>/investigate</command-name>\n<command-args>Fix the session brain ranking.</command-args>";
+        assert_eq!(
+            unwrap_claude_slash_command(text).as_deref(),
+            Some("Task Statement\n/investigate: Fix the session brain ranking.")
+        );
+        assert!(unwrap_claude_slash_command("Just a plain user message.").is_none());
+        assert!(unwrap_claude_slash_command(
+            "<command-message>x</command-message>\n<command-args></command-args>"
+        )
+        .is_none());
     }
 
     #[test]
