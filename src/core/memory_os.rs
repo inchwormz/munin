@@ -523,6 +523,7 @@ pub struct MemoryOsFrictionReport {
     pub generated_at: String,
     pub scope: MemoryOsInspectionScope,
     pub top_fixes: Vec<MemoryOsFrictionFix>,
+    pub new_unproven_friction: Vec<MemoryOsFrictionFix>,
     pub by_source: Vec<MemoryOsSourceBehaviorSummary>,
     pub redirects: MemoryOsRedirectSummary,
     pub repeated_corrections: Vec<MemoryOsCorrectionPatternSummary>,

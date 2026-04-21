@@ -260,21 +260,7 @@ pub(super) fn count_user_prose_signals(
         .iter()
         .filter(|checkpoint| checkpoint.capture.profile == "session-onboarding")
     {
-        for text in checkpoint
-            .capture
-            .goal
-            .iter()
-            .chain(checkpoint.capture.reentry.current_recommendation.iter())
-            .map(|value| value.as_str())
-            .chain(
-                checkpoint
-                    .capture
-                    .selected_items
-                    .iter()
-                    .filter(|item| item.section == "user_prompts")
-                    .map(|item| item.summary.as_str()),
-            )
-        {
+        for text in checkpoint_user_prose(checkpoint) {
             let signal_key = compact_display_text(text, 220).to_ascii_lowercase();
             let lowered = text.to_ascii_lowercase();
             if lowered.contains("command noise")
@@ -401,6 +387,76 @@ fn user_prose_friction_fixes(
     fixes
 }
 
+pub(super) fn build_memory_os_new_unproven_friction(
+    checkpoints: &[MemoryOsCheckpointEnvelope],
+) -> Vec<crate::core::memory_os::MemoryOsFrictionFix> {
+    let mut wrong_terminal_evidence = Vec::new();
+    let mut wrong_terminal_seen = HashSet::new();
+
+    for checkpoint in checkpoints
+        .iter()
+        .filter(|checkpoint| checkpoint.capture.profile == "session-onboarding")
+    {
+        for text in checkpoint_user_prose(checkpoint) {
+            let lowered = text.to_ascii_lowercase();
+            if text_has_wrong_terminal_clarification_signal(&lowered) {
+                let key = compact_display_text(text, 180).to_ascii_lowercase();
+                if wrong_terminal_seen.insert(key) {
+                    push_unique_string(
+                        &mut wrong_terminal_evidence,
+                        format!("user correction at {}", checkpoint.capture.generated_at),
+                    );
+                }
+            }
+        }
+    }
+
+    if wrong_terminal_evidence.is_empty() {
+        return Vec::new();
+    }
+
+    vec![crate::core::memory_os::MemoryOsFrictionFix {
+        fix_id: "friction:new-unproven:clarify-context-reversal".to_string(),
+        title: "Clarify before reversing direction on likely wrong-terminal context slips"
+            .to_string(),
+        impact: "high".to_string(),
+        status: "monitoring".to_string(),
+        summary: format!(
+            "User corrected a likely wrong-terminal/context-slip interpretation {} time(s).",
+            wrong_terminal_seen.len()
+        ),
+        permanent_fix:
+            "When a user message reverses the current task framing or sounds like it may belong to another terminal, ask one concise clarifying question before editing."
+                .to_string(),
+        evidence: wrong_terminal_evidence.into_iter().take(3).collect(),
+        score: 90 + wrong_terminal_seen.len().min(10) as i64,
+    }]
+}
+
+fn checkpoint_user_prose(checkpoint: &MemoryOsCheckpointEnvelope) -> impl Iterator<Item = &str> {
+    checkpoint
+        .capture
+        .goal
+        .iter()
+        .map(|value| value.as_str())
+        .chain(
+            checkpoint
+                .capture
+                .reentry
+                .current_recommendation
+                .iter()
+                .map(|value| value.as_str()),
+        )
+        .chain(
+            checkpoint
+                .capture
+                .selected_items
+                .iter()
+                .filter(|item| item.section == "user_prompts")
+                .map(|item| item.summary.as_str()),
+        )
+}
+
 fn counts_latest_at(current: &mut Option<DateTime<Utc>>, candidate: DateTime<Utc>) {
     match current {
         Some(existing) if *existing >= candidate => {}
@@ -422,6 +478,23 @@ fn text_has_autonomy_signal(lowered: &str) -> bool {
         || lowered.contains("infinite task")
         || lowered.contains("don't stop")
         || lowered.contains("dont stop")
+}
+
+fn text_has_wrong_terminal_clarification_signal(lowered: &str) -> bool {
+    lowered.contains("wrong terminal")
+        || lowered.contains("typed this in the wrong")
+        || lowered.contains("context slip")
+        || (lowered.contains("clarifying question")
+            && (lowered.contains("before editing")
+                || lowered.contains("before touching")
+                || lowered.contains("before acting")
+                || lowered.contains("ask")
+                || lowered.contains("confirm")))
+        || (lowered.contains("ask")
+            && lowered.contains("confirm")
+            && (lowered.contains("revers")
+                || lowered.contains("wrong terminal")
+                || lowered.contains("mistake")))
 }
 
 fn text_has_autonomy_correction(lowered: &str) -> bool {
@@ -952,6 +1025,26 @@ mod tests {
                 .expect("timestamp")
                 .with_timezone(&Utc)
         );
+    }
+
+    #[test]
+    fn new_unproven_friction_surfaces_single_wrong_terminal_clarification() {
+        let checkpoints = vec![onboarding_checkpoint(
+            "2026-04-21T18:03:06Z",
+            "2026-04-21T18:03:10Z",
+            "that was a mistake that munin should hopefully catch, and you should recognise the user has typed this in the wrong terminal; ask a clarifying question first to confirm before editing",
+        )];
+
+        let fixes = build_memory_os_new_unproven_friction(&checkpoints);
+
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].impact, "high");
+        assert_eq!(fixes[0].status, "monitoring");
+        assert!(fixes[0].title.contains("Clarify before reversing"));
+        assert!(fixes[0]
+            .permanent_fix
+            .contains("ask one concise clarifying question"));
+        assert!(fixes[0].evidence[0].contains("2026-04-21T18:03:06Z"));
     }
 
     #[test]

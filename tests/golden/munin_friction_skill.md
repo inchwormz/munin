@@ -27,6 +27,7 @@ munin doctor --scope user --format text
 
 ## Trust
 - `active` and `codified` are current friction.
+- `monitoring` in New But Unproven Friction Points is a single or newly detected high-signal correction worth avoiding, not yet proven enough for a codified fix.
 - `monitoring`, `fixed`, and `retired` are background unless the user asks for history.
 - Every surfaced fix should include its permanent-fix pointer when present.
 
@@ -43,6 +44,6 @@ munin doctor --scope user --format text
 
 ## Done
 You're done when the answer:
-- Lists the top 1-3 active/codified issues.
+- Lists the top 1-3 active/codified issues and any monitoring one-off points when present.
 - Includes each issue's permanent-fix pointer.
 - Mentions retired/fixed items only when asked or when explaining empty current friction.

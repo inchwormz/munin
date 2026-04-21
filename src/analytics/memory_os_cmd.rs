@@ -3246,6 +3246,31 @@ fn apply_friction_filters(
             .unwrap_or(true);
         agent_matches && time_matches
     });
+    report.new_unproven_friction.retain(|fix| {
+        let combined = format!(
+            "{} {} {} {} {}",
+            fix.title,
+            fix.summary,
+            fix.permanent_fix,
+            fix.status,
+            fix.evidence.join(" ")
+        )
+        .to_lowercase();
+        let agent_matches = agent
+            .as_deref()
+            .map(|needle| combined.contains(needle))
+            .unwrap_or(true);
+        let time_matches = since
+            .map(|since| {
+                fix.evidence.iter().any(|line| {
+                    first_rfc3339_timestamp(line)
+                        .map(|timestamp| timestamp >= since)
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(true);
+        agent_matches && time_matches
+    });
     report.by_source.clear();
     report.redirects = crate::core::memory_os::MemoryOsRedirectSummary::default();
     report.repeated_corrections.clear();
@@ -3312,6 +3337,11 @@ fn render_friction_text(report: &MemoryOsFrictionReport) {
     println!("Top Friction Fixes");
     println!("------------------");
     render_friction_fixes(&report.top_fixes);
+    println!();
+    println!("New But Unproven Friction Points");
+    println!("--------------------------------");
+    println!("Single or newly detected high-signal corrections worth avoiding, but not yet promoted to recurring friction.");
+    render_new_unproven_friction(&report.new_unproven_friction);
     println!();
     println!("By Source");
     println!("---------");
@@ -3432,6 +3462,27 @@ fn render_friction_fixes(fixes: &[MemoryOsFrictionFix]) {
     }
     if non_fixed.is_empty() && fixed_count == 0 {
         println!("- none");
+    }
+}
+
+fn render_new_unproven_friction(fixes: &[MemoryOsFrictionFix]) {
+    if fixes.is_empty() {
+        println!("- none");
+        return;
+    }
+    for (index, fix) in fixes.iter().enumerate() {
+        println!(
+            "{}. [{}|{}] {}",
+            index + 1,
+            fix.impact,
+            fix.status,
+            display_text(&fix.title, 110)
+        );
+        println!("   why it matters: {}", display_text(&fix.summary, 180));
+        println!("   avoid by: {}", display_text(&fix.permanent_fix, 220));
+        for evidence in fix.evidence.iter().take(2) {
+            println!("   evidence: {}", display_text(evidence, 160));
+        }
     }
 }
 
