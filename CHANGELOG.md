@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.9 - 2026-04-22
+
+### Fixed
+
+- Session Brain now keeps current-session data relevant by filtering old task prose out of strategy and user operating model output, preserving exact-session current ask handling, and keeping strategy context project-scoped.
+- Release Doctor now recursively audits public docs for unsupported or unresolvable `munin` command promises and reports all public-doc parity failures together.
+
 ## 0.5.8 - 2026-04-21
 
 ### Fixed
