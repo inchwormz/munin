@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.10 - 2026-04-24
+
+### Fixed
+
+- Session Brain step parsing now normalizes punctuation and spacing in assistant/user step phrases, so decisions and rejections survive forms like `Keep-step 4` and `Step-4 rejected`.
+- Assistant-side Session Brain materiality now ignores quoted, reported, and explicitly negated step phrases instead of misclassifying them as real decisions.
+
 ## 0.5.9 - 2026-04-22
 
 ### Fixed
