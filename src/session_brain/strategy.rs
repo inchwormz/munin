@@ -109,7 +109,13 @@ fn path_in_project(path: &Path, project_root: &str) -> bool {
 }
 
 fn normalized_project_root(path: &Path) -> String {
-    normalize_windows_path_string(detect_project_root(path).to_string_lossy().as_ref())
+    let detected = detect_project_root(path);
+    let root = if detected.as_os_str().is_empty() {
+        path
+    } else {
+        detected.as_path()
+    };
+    normalize_windows_path_string(root.to_string_lossy().as_ref())
 }
 
 #[allow(dead_code)]
