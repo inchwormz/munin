@@ -1027,6 +1027,7 @@ fn looks_like_current_ask(text: &str) -> bool {
         return false;
     }
     starts_with_action_verb(&lowered)
+        || starts_with_request_phrase(&lowered)
         || lowered.starts_with("fix ")
         || lowered.starts_with("do ")
         || lowered.starts_with("make ")
@@ -1039,6 +1040,14 @@ fn looks_like_current_ask(text: &str) -> bool {
         || lowered.starts_with("no i want you to ")
         || lowered.starts_with("i want you to ")
         || lowered.contains("i want you to fix")
+}
+
+fn starts_with_request_phrase(lowered: &str) -> bool {
+    lowered.starts_with("can you ")
+        || lowered.starts_with("could you ")
+        || lowered.starts_with("would you ")
+        || lowered.starts_with("will you ")
+        || lowered.starts_with("please ")
 }
 
 fn starts_with_action_verb(lowered: &str) -> bool {
@@ -1545,6 +1554,15 @@ mod tests {
                 .map(|item| item.summary.as_str()),
             Some("$munin-brain")
         );
+        assert!(focus.suppresses_machine_fallback());
+    }
+
+    #[test]
+    fn polite_can_you_fix_request_becomes_current_ask() {
+        let request = "Can you please fix the issue? There's something wrong with some surface of either context or Munin where it's confusing the agent about where we're at in the conversation.";
+        let focus = build_session_focus(&[message("user", request)], &[]);
+
+        assert_eq!(focus.preferred_live_goal().as_deref(), Some(request));
         assert!(focus.suppresses_machine_fallback());
     }
 

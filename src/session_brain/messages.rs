@@ -546,6 +546,7 @@ fn parse_codex_messages(path: &Path, session_id: &str) -> Result<SessionMessages
     let mut user = Vec::new();
     let mut assistant = Vec::new();
     let mut seen = HashSet::new();
+    let mut ephemeral_assistant_texts = HashSet::new();
 
     for (index, line) in reader.lines().enumerate() {
         let line = line?;
@@ -594,6 +595,17 @@ fn parse_codex_messages(path: &Path, session_id: &str) -> Result<SessionMessages
                             text,
                         );
                     }
+                } else if payload.get("type").and_then(Value::as_str) == Some("agent_message") {
+                    let phase = payload.get("phase").and_then(Value::as_str);
+                    if !assistant_phase_is_ephemeral(phase) {
+                        continue;
+                    }
+                    if let Some(message) = payload.get("message").and_then(Value::as_str) {
+                        let normalized = normalize_message_text(message);
+                        if !normalized.is_empty() {
+                            ephemeral_assistant_texts.insert(normalized);
+                        }
+                    }
                 }
             }
             Some("response_item") => {
@@ -623,6 +635,7 @@ fn parse_codex_messages(path: &Path, session_id: &str) -> Result<SessionMessages
                 let Some(text) = extract_codex_content_text(payload.get("content")) else {
                     continue;
                 };
+                let normalized_text = normalize_message_text(&text);
                 if role == "user" {
                     push_message(
                         &mut user,
@@ -635,9 +648,13 @@ fn parse_codex_messages(path: &Path, session_id: &str) -> Result<SessionMessages
                         line_number,
                         timestamp.clone(),
                         "user",
-                        &text,
+                        &normalized_text,
                     );
-                } else if role == "assistant" && assistant_text_is_material(&text) {
+                } else if role == "assistant"
+                    && !assistant_phase_is_ephemeral(payload.get("phase").and_then(Value::as_str))
+                    && !ephemeral_assistant_texts.contains(&normalized_text)
+                    && assistant_text_is_material(&text)
+                {
                     push_message(
                         &mut assistant,
                         &mut seen,
@@ -649,7 +666,7 @@ fn parse_codex_messages(path: &Path, session_id: &str) -> Result<SessionMessages
                         line_number,
                         timestamp.clone(),
                         "assistant",
-                        &text,
+                        &normalized_text,
                     );
                 }
             }
@@ -864,6 +881,10 @@ fn assistant_text_is_material(text: &str) -> bool {
         || assistant_reports_next_step(&lowered)
         || assistant_reports_decision(&lowered)
         || assistant_reports_finding(&lowered)
+}
+
+fn assistant_phase_is_ephemeral(phase: Option<&str>) -> bool {
+    matches!(phase, Some("commentary" | "final" | "final_answer"))
 }
 
 fn is_wrapper_tag_line(line: &str) -> bool {
@@ -1143,6 +1164,98 @@ mod tests {
         assert_eq!(parsed.user.len(), 1);
         assert_eq!(parsed.assistant.len(), 1);
         assert_eq!(parsed.user[0].text, "Ship the fix");
+    }
+
+    #[test]
+    fn parse_codex_messages_ignores_commentary_phase_assistant_progress() {
+        let temp = tempfile::NamedTempFile::new().expect("tempfile");
+        let mut file = temp.reopen().expect("reopen");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:06Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"abc\",\"cwd\":\"C:\\\\repo\"}}}}"
+        )
+        .expect("meta");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:07Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Can you please fix the issue?\"}}}}"
+        )
+        .expect("user");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:08Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{{\"text\":\"I’ve confirmed two likely hot paths from memory: Munin Session Brain live-read behavior, and a prior deterministic fix.\"}}]}}}}"
+        )
+        .expect("assistant commentary");
+
+        let parsed = parse_codex_messages(temp.path(), "abc").expect("parse");
+
+        assert_eq!(parsed.user.len(), 1);
+        assert!(
+            parsed.assistant.is_empty(),
+            "commentary-phase progress updates must not become session-brain evidence"
+        );
+    }
+
+    #[test]
+    fn parse_codex_messages_ignores_final_phase_assistant_summary() {
+        let temp = tempfile::NamedTempFile::new().expect("tempfile");
+        let mut file = temp.reopen().expect("reopen");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:06Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"abc\",\"cwd\":\"C:\\\\repo\"}}}}"
+        )
+        .expect("meta");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:07Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Can you please fix the issue?\"}}}}"
+        )
+        .expect("user");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:08Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final\",\"content\":[{{\"text\":\"Root cause was in Munin's live Session Brain path and the fix is installed now.\"}}]}}}}"
+        )
+        .expect("assistant final");
+
+        let parsed = parse_codex_messages(temp.path(), "abc").expect("parse");
+
+        assert_eq!(parsed.user.len(), 1);
+        assert!(
+            parsed.assistant.is_empty(),
+            "final-phase closeout summaries must not become session-brain evidence"
+        );
+    }
+
+    #[test]
+    fn parse_codex_messages_ignores_final_answer_event_msg_shadow_of_response_item() {
+        let temp = tempfile::NamedTempFile::new().expect("tempfile");
+        let mut file = temp.reopen().expect("reopen");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:06Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"abc\",\"cwd\":\"C:\\\\repo\"}}}}"
+        )
+        .expect("meta");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:07Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"Can you please fix the issue?\"}}}}"
+        )
+        .expect("user");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:08Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"Root cause was in Munin's live Session Brain path and the fix is installed now.\",\"phase\":\"final_answer\",\"memory_citation\":null}}}}"
+        )
+        .expect("agent message");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-04-24T03:21:09Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"text\":\"Root cause was in Munin's live Session Brain path and the fix is installed now.\"}}]}}}}"
+        )
+        .expect("assistant response item");
+
+        let parsed = parse_codex_messages(temp.path(), "abc").expect("parse");
+
+        assert_eq!(parsed.user.len(), 1);
+        assert!(
+            parsed.assistant.is_empty(),
+            "assistant response items shadowed by final_answer agent messages must not become session-brain evidence"
+        );
     }
 
     #[test]
