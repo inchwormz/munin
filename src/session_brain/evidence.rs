@@ -1099,6 +1099,26 @@ fn looks_like_dissatisfaction(text: &str) -> bool {
         || lowered.contains("not what i'm concerned about")
 }
 
+fn normalize_classifier_text(text: &str) -> String {
+    text.to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalized_starts_with_any(text: &str, phrases: &[&str]) -> bool {
+    let normalized = normalize_classifier_text(text);
+    phrases.iter().any(|phrase| normalized.starts_with(phrase))
+}
+
+fn normalized_contains_any(text: &str, phrases: &[&str]) -> bool {
+    let normalized = normalize_classifier_text(text);
+    phrases.iter().any(|phrase| normalized.contains(phrase))
+}
+
 fn looks_like_rejection(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     lowered.contains("reject")
@@ -1108,15 +1128,31 @@ fn looks_like_rejection(text: &str) -> bool {
         || lowered.contains("do not redesign")
         || lowered.contains("no new public")
         || lowered.contains("not an option")
-        || lowered.contains("step 4 rejected")
+        || normalized_contains_any(
+            text,
+            &[
+                "step 4 rejected",
+                "step 4 is rejected",
+                "step four rejected",
+                "reject step 4",
+                "reject step four",
+            ],
+        )
 }
 
 fn looks_like_decision(text: &str) -> bool {
     let lowered = text.to_ascii_lowercase();
     lowered.starts_with("decision:")
-        || lowered.starts_with("keep step ")
-        || lowered.starts_with("treat step ")
-        || lowered.starts_with("preserve ")
+        || normalized_starts_with_any(
+            text,
+            &[
+                "keep step",
+                "keep the step",
+                "treat step",
+                "treat the step",
+                "preserve",
+            ],
+        )
         || lowered.contains("chosen")
         || lowered.contains("decision")
 }
@@ -1422,6 +1458,33 @@ mod tests {
             .next_move_candidates
             .iter()
             .any(|item| item.summary.contains("SessionFocus / SessionEvidence")));
+    }
+
+    #[test]
+    fn root_step_phrase_heuristics_normalize_punctuation_and_spacing() {
+        let user = vec![
+            message(
+                "user",
+                "Step-4 rejected because it duplicates the current ask.",
+            ),
+            message("user", "Keep-step 4 as final in evidence.rs."),
+        ];
+
+        assert!(looks_like_rejection(
+            "Step-4 rejected because it duplicates the current ask."
+        ));
+        assert!(looks_like_decision("Keep-step 4 as final in evidence.rs."));
+
+        let focus = build_session_focus(&user, &[]);
+
+        assert!(focus
+            .rejections
+            .iter()
+            .any(|item| item.summary.contains("Step-4 rejected")));
+        assert!(focus
+            .decisions
+            .iter()
+            .any(|item| item.summary.contains("Keep-step 4")));
     }
 
     #[test]

@@ -942,12 +942,94 @@ fn assistant_reports_next_step(lowered: &str) -> bool {
         .any(|verb| lowered.contains(verb))
 }
 
+fn normalize_classifier_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn contains_step_decision_phrase(lowered: &str) -> bool {
+    let normalized = normalize_classifier_text(lowered);
+    [
+        "keeping step",
+        "keep step",
+        "keep the step",
+        "treat step",
+        "treat the step",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase))
+}
+
+fn step_phrase_is_reported_example(lowered: &str) -> bool {
+    let normalized = normalize_classifier_text(lowered);
+    let mentions_step_phrase = [
+        "keeping step",
+        "keep step",
+        "keep the step",
+        "treat step",
+        "treat the step",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    if !mentions_step_phrase {
+        return false;
+    }
+    let reports_phrase = [
+        "output says",
+        "text says",
+        "string says",
+        "phrase says",
+        "contains keep step",
+        "contains treat step",
+        "quoted keep step",
+        "quoted treat step",
+        "quote keep step",
+        "quote treat step",
+        "example keep step",
+        "example treat step",
+        "examples keep step",
+        "examples treat step",
+        "echoes keep step",
+        "echoes treat step",
+        "shows keep step",
+        "shows treat step",
+        "mentions keep step",
+        "mentions treat step",
+        "says keep step",
+        "says treat step",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let negates_step_phrase = [
+        "do not keep step",
+        "do not keep the step",
+        "do not treat step",
+        "do not treat the step",
+        "not keep step",
+        "not treat step",
+        "don t keep step",
+        "don t treat step",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let has_quotes = lowered.contains('"')
+        || lowered.contains('`')
+        || lowered.contains('\u{201c}')
+        || lowered.contains('\u{201d}');
+    reports_phrase || negates_step_phrase || has_quotes
+}
+
 fn assistant_reports_decision(lowered: &str) -> bool {
-    (lowered.starts_with("decision:")
-        || lowered.contains("keeping step")
-        || lowered.contains("keep step")
-        || lowered.contains("treat step"))
+    if lowered.starts_with("decision:") {
+        return has_concrete_subject(lowered);
+    }
+    contains_step_decision_phrase(lowered)
         && has_concrete_subject(lowered)
+        && !step_phrase_is_reported_example(lowered)
 }
 
 fn assistant_reports_finding(lowered: &str) -> bool {
@@ -1442,6 +1524,27 @@ mod tests {
         ));
         assert!(!assistant_text_is_material(
             "Found it. Next steps and risks are noted."
+        ));
+    }
+
+    #[test]
+    fn assistant_materiality_normalizes_step_decision_phrases() {
+        assert!(assistant_text_is_material("Keep-step 4 on messages.rs."));
+        assert!(assistant_text_is_material(
+            "Treat\nthe step 4 on session brain."
+        ));
+    }
+
+    #[test]
+    fn assistant_materiality_ignores_reported_step_examples() {
+        assert!(!assistant_text_is_material(
+            "The bad output says \"keep step 4\" in messages.rs."
+        ));
+        assert!(!assistant_text_is_material(
+            "The current bad output contains `treat step 4` in session brain."
+        ));
+        assert!(!assistant_text_is_material(
+            "Do not keep step 4 in messages.rs."
         ));
     }
 }
