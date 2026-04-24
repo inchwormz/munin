@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.11 - 2026-04-24
+
+### Fixed
+
+- Session Brain step parsing now treats step phrases as token sequences, avoiding false positives like `bookkeeping step` while keeping punctuation-normalized forms.
+- Assistant-side step decisions now preserve real decisions with quoted file targets while still ignoring quoted step examples and stronger negations like `never keep the step`.
+- User-side step rejection/decision extraction now ignores negated forms like `Step 4 is not rejected` and non-decisions like `no decision yet`.
+
 ## 0.5.10 - 2026-04-24
 
 ### Fixed
