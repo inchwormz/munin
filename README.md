@@ -46,8 +46,9 @@ open loops, repeated friction, command outcomes, strategy context, and next step
 3. **Strategy and proactivity** turn memory into concrete tasks. `munin nudge`
 now combines strategy red/yellow items with continuity work from previous
 completed sessions, active projects, and verified incomplete tasks. The morning
-proactivity defaults to spawning a Codex session that can evaluate state on a schedule and start the next work
-session using the local Codex login. It infers what tasks should be executed based on goal/project deltas. Where you are now,
+proactivity can spawn either a Claude or Codex session based on the configured
+provider or an explicit `--provider claude|codex` override. It infers what tasks
+should be executed based on goal/project deltas. Where you are now,
 where you want to be, what closes the delta? It will enable Claude/Codex to be proactive to help
 you reach your goals.
 5. **Agent access** installs Claude skills, Claude slash commands, Codex skills,
@@ -360,7 +361,11 @@ Repository layout:
 - `src/assets/skills/` - bundled installable prose skills
 - `tests/` - CLI, resolver, package, and fixture tests
 
-`munin proactivity schedule-install` installs the morning runner for the current operating system. On Windows it uses Task Scheduler, on macOS it installs a LaunchAgent, and on Linux it installs a systemd user timer. New installs default to automatic spawning at the scheduled morning run.
+`munin proactivity schedule-install --provider codex` installs the morning
+runner for Codex. `munin proactivity schedule-install --provider claude`
+installs it for Claude. On Windows it uses Task Scheduler, on macOS it installs
+a LaunchAgent, and on Linux it installs a systemd user timer. New installs
+default to automatic spawning at the scheduled morning run.
 
 ## Notes
 

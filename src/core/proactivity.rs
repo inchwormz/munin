@@ -1643,14 +1643,14 @@ fn load_job(path: &Path) -> Result<ProactivityJob> {
 
 fn parse_provider_text(value: Option<&str>) -> ProactivityProvider {
     match value
-        .unwrap_or("codex")
+        .unwrap_or("claude")
         .trim()
         .to_ascii_lowercase()
         .as_str()
     {
         "claude" => ProactivityProvider::Claude,
         "codex" => ProactivityProvider::Codex,
-        _ => ProactivityProvider::Codex,
+        _ => ProactivityProvider::Claude,
     }
 }
 
@@ -2654,16 +2654,20 @@ mod tests {
     }
 
     #[test]
-    fn provider_text_defaults_to_codex() {
-        assert_eq!(parse_provider_text(None), ProactivityProvider::Codex);
-        assert_eq!(parse_provider_text(Some("")), ProactivityProvider::Codex);
+    fn provider_text_preserves_legacy_claude_fallback() {
+        assert_eq!(parse_provider_text(None), ProactivityProvider::Claude);
+        assert_eq!(parse_provider_text(Some("")), ProactivityProvider::Claude);
         assert_eq!(
             parse_provider_text(Some("unknown")),
-            ProactivityProvider::Codex
+            ProactivityProvider::Claude
         );
         assert_eq!(
             parse_provider_text(Some("claude")),
             ProactivityProvider::Claude
+        );
+        assert_eq!(
+            parse_provider_text(Some("codex")),
+            ProactivityProvider::Codex
         );
     }
 

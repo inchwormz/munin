@@ -79,7 +79,7 @@ impl Default for ProactivityConfig {
             enabled: false,
             default_scope: None,
             schedule_local: "08:00".to_string(),
-            provider: ProactivityProvider::Codex,
+            provider: ProactivityProvider::Claude,
             auto_spawn: true,
             project_path: None,
             queue_dir: None,
@@ -644,9 +644,9 @@ stale_claim_minutes = 120
     }
 
     #[test]
-    fn test_proactivity_default_provider_is_codex() {
+    fn test_proactivity_default_provider_preserves_legacy_claude_default() {
         let config = Config::default();
-        assert_eq!(config.proactivity.provider, ProactivityProvider::Codex);
+        assert_eq!(config.proactivity.provider, ProactivityProvider::Claude);
     }
 
     #[test]

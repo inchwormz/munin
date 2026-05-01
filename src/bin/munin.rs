@@ -1505,7 +1505,7 @@ const INSTALL_QUICK_SKILLS: &[InstallQuickSkill] = &[
         description: "Run Munin's morning strategic proactivity evaluation on demand.",
         when_to_use: "Use when the user asks to invoke proactivity manually, kick off a morning proactivity cycle now, or see the latest strategic next-move recommendations without waiting for the scheduled 8am task.",
         primary_command: "munin proactivity run --no-spawn --format text",
-        how_to_read_output: "The output is the recommendation report: strategic nudges with confidence, continuity tasks, any queued job id, and warnings. Because `--no-spawn` is set, no follow-up session is launched; the user can approve the queued brief later with `munin proactivity approve <job-id>`.",
+        how_to_read_output: "The output is the recommendation report: strategic nudges with confidence, continuity tasks, any queued job id, and warnings. Because `--no-spawn` is set, no follow-up session is launched; the queued brief uses the configured provider unless the command includes `--provider codex` or `--provider claude`. The user can approve the queued brief later with `munin proactivity approve <job-id>`.",
         done: "The run reports one or more nudges (or a clean no-action state), names any queued job id, and confirms no session was spawned.",
     },
 ];
