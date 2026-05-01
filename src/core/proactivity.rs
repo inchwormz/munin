@@ -1643,13 +1643,14 @@ fn load_job(path: &Path) -> Result<ProactivityJob> {
 
 fn parse_provider_text(value: Option<&str>) -> ProactivityProvider {
     match value
-        .unwrap_or("claude")
+        .unwrap_or("codex")
         .trim()
         .to_ascii_lowercase()
         .as_str()
     {
+        "claude" => ProactivityProvider::Claude,
         "codex" => ProactivityProvider::Codex,
-        _ => ProactivityProvider::Claude,
+        _ => ProactivityProvider::Codex,
     }
 }
 
@@ -1987,8 +1988,8 @@ fn build_launch_command(
         ProactivityProvider::Codex => build_provider_launch_command(
             &job.session_name,
             &runtime.project_path,
-            "codex-real",
-            &[&prompt],
+            "codex",
+            &["--dangerously-bypass-approvals-and-sandbox", &prompt],
             &[],
         ),
     }
@@ -2640,11 +2641,30 @@ mod tests {
     fn render_windows_command_supports_ps1_wrappers() {
         let rendered = render_windows_command(
             Path::new("C:/Users/OEM/bin/codex.ps1"),
-            &["munin-morning", "Read C:/brief.md"],
+            &[
+                "--dangerously-bypass-approvals-and-sandbox",
+                "munin-morning",
+                "Read C:/brief.md",
+            ],
         );
         assert!(rendered.contains("powershell.exe"));
         assert!(rendered.contains("-ExecutionPolicy Bypass"));
+        assert!(rendered.contains("--dangerously-bypass-approvals-and-sandbox"));
         assert!(rendered.contains("munin-morning"));
+    }
+
+    #[test]
+    fn provider_text_defaults_to_codex() {
+        assert_eq!(parse_provider_text(None), ProactivityProvider::Codex);
+        assert_eq!(parse_provider_text(Some("")), ProactivityProvider::Codex);
+        assert_eq!(
+            parse_provider_text(Some("unknown")),
+            ProactivityProvider::Codex
+        );
+        assert_eq!(
+            parse_provider_text(Some("claude")),
+            ProactivityProvider::Claude
+        );
     }
 
     #[test]
