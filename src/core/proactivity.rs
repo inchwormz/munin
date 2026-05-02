@@ -19,6 +19,7 @@ const COMPLETED_FILE: &str = "completed.json";
 const HEARTBEAT_FILE: &str = "proactivity-daemon.heartbeat";
 const SCHEDULE_SWEEP_INTERVAL_MINUTES: u32 = 30;
 const MORNING_PROMPT_TOKEN: &str = "munin-morning";
+const MAX_FRICTION_NUDGES: usize = 12;
 
 #[derive(Debug, Clone)]
 pub struct ProactivityRunOptions {
@@ -351,7 +352,7 @@ pub fn run(options: &ProactivityRunOptions) -> Result<ProactivityRunReport> {
             recommend_report = fallback_recommend_report(&runtime.scope_id, warning);
         }
     }
-    add_friction_nudges(&tracker, &mut recommend_report)?;
+    add_friction_nudges(&tracker, &runtime, &mut recommend_report)?;
     let files = file_set(&runtime)?;
     let completed_index = load_completed_index(&files.completed_path)?;
     let mut decision = evaluate_decision(
@@ -1107,22 +1108,87 @@ fn record_proactivity_approval_jobs(
     Ok(())
 }
 
-fn add_friction_nudges(tracker: &Tracker, report: &mut StrategyRecommendReport) -> Result<()> {
+fn add_friction_nudges(
+    tracker: &Tracker,
+    runtime: &RuntimeContext,
+    report: &mut StrategyRecommendReport,
+) -> Result<()> {
     let friction = tracker.get_memory_os_friction_report(MemoryOsInspectionScope::User, None)?;
     let mut friction_nudges = friction
         .top_fixes
         .iter()
         .filter(|fix| !matches!(fix.status.as_str(), "codified" | "fixed" | "retired"))
-        .take(3)
+        .take(MAX_FRICTION_NUDGES)
         .map(friction_fix_to_nudge)
         .collect::<Vec<_>>();
+    report
+        .nudge_tasks
+        .extend(friction_nudges.iter().map(|nudge| nudge.task.clone()));
     report.nudges.append(&mut friction_nudges);
+    suppress_completed_friction_nudges(tracker, runtime, report)?;
     report.nudges.sort_by(|left, right| {
         proactivity_nudge_rank(right)
             .cmp(&proactivity_nudge_rank(left))
             .then(left.task.cmp(&right.task))
     });
     Ok(())
+}
+
+fn suppress_completed_friction_nudges(
+    tracker: &Tracker,
+    runtime: &RuntimeContext,
+    report: &mut StrategyRecommendReport,
+) -> Result<()> {
+    let project_path = runtime.project_path.display().to_string();
+    let completed = tracker.get_approval_jobs_filtered(
+        500,
+        Some(&project_path),
+        Some(&[crate::core::tracking::ApprovalJobStatus::Completed]),
+    )?;
+    if completed.is_empty() {
+        return Ok(());
+    }
+
+    let mut remaining = Vec::with_capacity(report.nudges.len());
+    let mut suppressed_tasks = Vec::new();
+    for nudge in report.nudges.drain(..) {
+        if nudge.item_kind == "friction-fix"
+            && completed_friction_fix_still_watching(&nudge, &completed)
+        {
+            suppressed_tasks.push(nudge.task.clone());
+            report
+                .suppressed_nudges
+                .push(with_suppression_reason(nudge, "watching_for_recurrence"));
+        } else {
+            remaining.push(nudge);
+        }
+    }
+    if !suppressed_tasks.is_empty() {
+        report
+            .nudge_tasks
+            .retain(|task| !suppressed_tasks.iter().any(|suppressed| suppressed == task));
+    }
+    report.nudges = remaining;
+    Ok(())
+}
+
+fn completed_friction_fix_still_watching(
+    nudge: &StrategicNudge,
+    completed: &[crate::core::tracking::ApprovalJobRecord],
+) -> bool {
+    let Ok(current_evidence_json) = serde_json::to_string(&nudge.evidence) else {
+        return false;
+    };
+    completed.iter().any(|record| {
+        record.item_kind == nudge.item_kind
+            && record.item_id == nudge.item_id
+            && record.evidence_json == current_evidence_json
+    })
+}
+
+fn with_suppression_reason(mut nudge: StrategicNudge, reason: &str) -> StrategicNudge {
+    nudge.suppression_reason = Some(reason.to_string());
+    nudge
 }
 
 fn fallback_recommend_report(scope_id: &str, warning: String) -> StrategyRecommendReport {
@@ -2843,6 +2909,135 @@ mod tests {
         assert_eq!(nudge.interrupt_level, "interrupt");
         assert!(nudge.task.contains("Stop surfacing command noise"));
         assert!(nudge.expected_effect.contains("Permanently reduce"));
+    }
+
+    fn sample_runtime_with_project(project_path: PathBuf, root: &Path) -> RuntimeContext {
+        RuntimeContext {
+            config: sample_config(),
+            scope_id: "sitesorted-business".to_string(),
+            provider: ProactivityProvider::Claude,
+            project_path,
+            schedule_local: "08:00".to_string(),
+            max_spawns_per_day: 1,
+            stale_claim_minutes: 90,
+            paths: ProactivityPaths {
+                queue_dir: root.join("queue"),
+                results_dir: root.join("results"),
+                briefs_dir: root.join("briefs"),
+                state_dir: root.join("state"),
+            },
+        }
+    }
+
+    fn sample_friction_nudge(evidence: Vec<String>) -> StrategicNudge {
+        StrategicNudge {
+            task: "Fix friction: Keep autonomous work moving without manual polling".to_string(),
+            item_id: Some("friction:autonomy-polling".to_string()),
+            item_kind: "friction-fix".to_string(),
+            supports: Vec::new(),
+            why_now: "User has asked for stronger autonomous polling behavior.".to_string(),
+            evidence,
+            evidence_freshness: "fresh".to_string(),
+            confidence: "high".to_string(),
+            interrupt_level: "interrupt".to_string(),
+            suppression_reason: None,
+            expected_effect: "Permanently reduce recurring friction: poll until terminal result."
+                .to_string(),
+        }
+    }
+
+    fn sample_recommend_report_with_nudge(nudge: StrategicNudge) -> StrategyRecommendReport {
+        StrategyRecommendReport {
+            generated_at: Utc::now().to_rfc3339(),
+            scope_id: "sitesorted-business".to_string(),
+            continuity: strategy::StrategyContinuitySnapshot {
+                active: false,
+                summary: None,
+            },
+            nudge_tasks: vec![nudge.task.clone()],
+            continuity_tasks: Vec::new(),
+            nudges: vec![nudge],
+            suppressed_nudges: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn seed_completed_friction_fix(tracker: &Tracker, project_path: &str, evidence: &[String]) {
+        tracker
+            .upsert_approval_job_for_project(
+                project_path,
+                &crate::core::tracking::ApprovalJobInput {
+                    job_id: "approval-sitesorted-business-2026-05-01-friction-fix-autonomy"
+                        .to_string(),
+                    scope: "project".to_string(),
+                    scope_target: Some(project_path.to_string()),
+                    local_date: "2026-05-01".to_string(),
+                    item_id: Some("friction:autonomy-polling".to_string()),
+                    item_kind: "friction-fix".to_string(),
+                    title: "Fix friction: Keep autonomous work moving without manual polling"
+                        .to_string(),
+                    summary: "done; watching for recurrence".to_string(),
+                    status: crate::core::tracking::ApprovalJobStatus::Completed,
+                    source_kind: "strategy-nudge".to_string(),
+                    provider: Some("codex".to_string()),
+                    continuity_active: false,
+                    expected_effect: Some(
+                        "Permanently reduce recurring polling friction.".to_string(),
+                    ),
+                    queue_path: None,
+                    result_path: Some("C:/tmp/result.json".to_string()),
+                    evidence_json: serde_json::to_string(evidence).expect("evidence json"),
+                    review_after: Some("2026-05-02T00:00:00Z".to_string()),
+                    expires_at: Some("2026-05-08T00:00:00Z".to_string()),
+                },
+            )
+            .expect("seed completed friction approval");
+    }
+
+    #[test]
+    fn completed_friction_fix_is_suppressed_while_evidence_is_unchanged() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
+        let project_path = temp.path().join("project");
+        let runtime = sample_runtime_with_project(project_path.clone(), temp.path());
+        let evidence = vec!["99 autonomy/polling corrections".to_string()];
+        seed_completed_friction_fix(&tracker, &project_path.display().to_string(), &evidence);
+
+        let mut report = sample_recommend_report_with_nudge(sample_friction_nudge(evidence));
+        suppress_completed_friction_nudges(&tracker, &runtime, &mut report).expect("suppression");
+
+        assert!(report.nudges.is_empty());
+        assert!(report.nudge_tasks.is_empty());
+        assert_eq!(report.suppressed_nudges.len(), 1);
+        assert_eq!(
+            report.suppressed_nudges[0].suppression_reason.as_deref(),
+            Some("watching_for_recurrence")
+        );
+    }
+
+    #[test]
+    fn completed_friction_fix_requeues_when_evidence_changes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
+        let project_path = temp.path().join("project");
+        let runtime = sample_runtime_with_project(project_path.clone(), temp.path());
+        seed_completed_friction_fix(
+            &tracker,
+            &project_path.display().to_string(),
+            &["99 autonomy/polling corrections".to_string()],
+        );
+
+        let changed_evidence = vec![
+            "100 autonomy/polling corrections".to_string(),
+            "newer autonomy correction exists after codification".to_string(),
+        ];
+        let mut report =
+            sample_recommend_report_with_nudge(sample_friction_nudge(changed_evidence));
+        suppress_completed_friction_nudges(&tracker, &runtime, &mut report).expect("suppression");
+
+        assert_eq!(report.nudges.len(), 1);
+        assert_eq!(report.nudge_tasks.len(), 1);
+        assert!(report.suppressed_nudges.is_empty());
     }
 
     #[test]
