@@ -1,6 +1,8 @@
 use super::config::{context_data_dir, Config, ProactivityProvider};
-use super::memory_os::MemoryOsFrictionFix;
-use super::memory_os::MemoryOsInspectionScope;
+use super::memory_os::{
+    MemoryOsCorrectionPatternSummary, MemoryOsFrictionFix, MemoryOsInspectionScope,
+    MemoryOsNarrativeFinding, MemoryOsOverviewReport, MemoryOsProjectSummary,
+};
 use super::strategy::{self, StrategicNudge, StrategyReadOptions, StrategyRecommendReport};
 use super::tracking::Tracker;
 use super::utils::resolve_binary;
@@ -1401,6 +1403,10 @@ fn render_resume_prompt() -> Result<String> {
     let overview = tracker
         .get_memory_os_overview_report(MemoryOsInspectionScope::User, None)
         .context("Failed to compile Memory OS overview for proactivity")?;
+    Ok(render_resume_prompt_from_overview(&overview))
+}
+
+fn render_resume_prompt_from_overview(overview: &MemoryOsOverviewReport) -> String {
     let mut buffer = String::new();
     let _ = writeln!(
         buffer,
@@ -1410,25 +1416,28 @@ fn render_resume_prompt() -> Result<String> {
     let _ = writeln!(buffer, "<what_i_know>");
     let _ = writeln!(
         buffer,
-        "- Imported {} sessions and {} shell executions into local Memory OS.",
-        overview.imported_sessions, overview.imported_shell_executions
+        "- Memory OS is ready; this startup brief is compiled from user prose, strategy, and friction signals."
     );
-    for project in overview.top_projects.iter().take(4) {
-        let _ = writeln!(
-            buffer,
-            "- Active project cluster: {} ({} sessions, {} shells)",
-            project.repo_label, project.sessions, project.shell_executions
-        );
+    for project in proactivity_project_focus(overview).iter().take(4) {
+        let _ = writeln!(buffer, "- Recent project focus: {}", project.repo_label);
     }
     let _ = writeln!(buffer, "</what_i_know>");
     let _ = writeln!(buffer, "<what_is_active>");
-    for finding in overview.active_work.iter().take(4) {
+    for finding in proactivity_safe_findings(&overview.active_work)
+        .iter()
+        .take(4)
+    {
         let _ = writeln!(buffer, "- {}: {}", finding.title, finding.summary);
-        for evidence in finding.evidence.iter().take(2) {
+        for evidence in finding
+            .evidence
+            .iter()
+            .filter(|evidence| !proactivity_text_has_command_noise(evidence))
+            .take(2)
+        {
             let _ = writeln!(buffer, "  evidence: {evidence}");
         }
     }
-    if overview.active_work.is_empty() {
+    if proactivity_safe_findings(&overview.active_work).is_empty() {
         let _ = writeln!(
             buffer,
             "- No active Memory OS work item is currently compiled."
@@ -1436,17 +1445,17 @@ fn render_resume_prompt() -> Result<String> {
     }
     let _ = writeln!(buffer, "</what_is_active>");
     let _ = writeln!(buffer, "<watchouts>");
-    for correction in overview.top_correction_patterns.iter().take(4) {
+    for correction in proactivity_safe_corrections(&overview.top_correction_patterns)
+        .iter()
+        .take(4)
+    {
         let _ = writeln!(
             buffer,
-            "- Repeated correction [{}] x{}: use `{}` instead of `{}`.",
-            correction.error_kind,
-            correction.count,
-            correction.corrected_command,
-            correction.wrong_command
+            "- Repeated operational correction [{}] x{}; exact commands stay in inspect/json evidence.",
+            correction.error_kind, correction.count
         );
     }
-    if overview.top_correction_patterns.is_empty() {
+    if proactivity_safe_corrections(&overview.top_correction_patterns).is_empty() {
         let _ = writeln!(
             buffer,
             "- No repeated correction pattern is currently compiled."
@@ -1464,7 +1473,106 @@ fn render_resume_prompt() -> Result<String> {
     );
     let _ = writeln!(buffer, "</startup_rules>");
     let _ = writeln!(buffer, "</startup_memory_brief>");
-    Ok(buffer)
+    buffer
+}
+
+fn proactivity_project_focus(overview: &MemoryOsOverviewReport) -> Vec<&MemoryOsProjectSummary> {
+    overview
+        .top_projects
+        .iter()
+        .filter(|project| {
+            !matches!(project.repo_label.as_str(), "workspace-root" | "home-root")
+                && !proactivity_text_has_command_noise(&project.repo_label)
+        })
+        .collect()
+}
+
+fn proactivity_safe_findings(
+    findings: &[MemoryOsNarrativeFinding],
+) -> Vec<&MemoryOsNarrativeFinding> {
+    findings
+        .iter()
+        .filter(|finding| {
+            !proactivity_text_has_command_noise(&finding.title)
+                && !proactivity_text_has_command_noise(&finding.summary)
+        })
+        .collect()
+}
+
+fn proactivity_safe_corrections(
+    corrections: &[MemoryOsCorrectionPatternSummary],
+) -> Vec<&MemoryOsCorrectionPatternSummary> {
+    corrections
+        .iter()
+        .filter(|correction| {
+            !correction.error_kind.trim().is_empty()
+                && !proactivity_text_has_command_noise(&correction.error_kind)
+        })
+        .collect()
+}
+
+fn proactivity_text_has_command_noise(text: &str) -> bool {
+    let lowered = text.trim().to_ascii_lowercase();
+    if lowered.is_empty() {
+        return false;
+    }
+
+    let command_starts = [
+        "cd ",
+        "git ",
+        "context ",
+        "context proxy ",
+        "powershell",
+        "pwsh",
+        "cmd ",
+        "node ",
+        "cargo ",
+        "npm ",
+        "npx ",
+        "python ",
+        "python3 ",
+        ".\\",
+        "./",
+        "run /",
+    ];
+    if command_starts
+        .iter()
+        .any(|prefix| lowered.starts_with(prefix))
+    {
+        return true;
+    }
+
+    let command_markers = [
+        "&&",
+        "||",
+        "get-childitem",
+        "select-string",
+        ".ps1",
+        ".exe",
+        ".cmd",
+        ".omx",
+        ".omx2",
+        ".codex-state",
+        "inbox.md",
+        "worker-",
+        "launch-detached",
+        "origin/",
+        "context proxy",
+        "shell executions",
+        " shells",
+        "sessions,",
+        "[omx_tmux_inject]",
+        "execute your assignment",
+        "report concrete status",
+        "report status + evidence",
+        "status.json",
+        "<task>",
+        "<run_id>",
+        "<deliverable>",
+    ];
+    command_markers
+        .iter()
+        .any(|needle| lowered.contains(needle))
 }
 
 fn render_morning_intervention_prompt(report: &StrategyRecommendReport) -> String {
@@ -2676,6 +2784,7 @@ fn xml_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::config::{ProactivityConfig, StrategyConfig};
+    use crate::core::memory_os::{MemoryOsImportedSourceSummary, MemoryOsOnboardingState};
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -2686,6 +2795,88 @@ mod tests {
         config.proactivity.default_scope = Some("sitesorted-business".to_string());
         config.proactivity.project_path = Some(PathBuf::from("C:/Users/OEM/Projects/sitesorted"));
         config
+    }
+
+    fn sample_memory_os_overview() -> MemoryOsOverviewReport {
+        MemoryOsOverviewReport {
+            generated_at: "2026-05-04T00:00:00Z".to_string(),
+            scope: MemoryOsInspectionScope::User,
+            imported_sessions: 3086,
+            imported_shell_executions: 40356,
+            imported_sources: vec![MemoryOsImportedSourceSummary {
+                source: "codex".to_string(),
+                sessions: 10,
+                shell_executions: 100,
+            }],
+            top_projects: vec![
+                MemoryOsProjectSummary {
+                    project_path: "C:/Users/OEM/Projects/sitesorted/watcher-v2".to_string(),
+                    repo_label: "watcher-v2".to_string(),
+                    sessions: 377,
+                    shell_executions: 5370,
+                },
+                MemoryOsProjectSummary {
+                    project_path: "C:/Users/OEM".to_string(),
+                    repo_label: "home-root".to_string(),
+                    sessions: 100,
+                    shell_executions: 200,
+                },
+            ],
+            top_correction_patterns: vec![MemoryOsCorrectionPatternSummary {
+                error_kind: "wrong-terminal".to_string(),
+                wrong_command: "npm run build && cargo test".to_string(),
+                corrected_command: "cargo test".to_string(),
+                count: 9,
+                successful_replays: 2,
+                failed_replays: 1,
+            }],
+            active_work: vec![
+                MemoryOsNarrativeFinding {
+                    title: "Current work".to_string(),
+                    summary: "Fix the Memory OS brief so it surfaces useful user prose before build output."
+                        .to_string(),
+                    evidence: vec![
+                        "user prompt checkpoint at 2026-05-04T00:00:00Z".to_string(),
+                        "377 sessions, 5370 shell executions".to_string(),
+                    ],
+                },
+                MemoryOsNarrativeFinding {
+                    title: "cd C:/repo && npm run build".to_string(),
+                    summary: "cd C:/repo && npm run build".to_string(),
+                    evidence: Vec::new(),
+                },
+            ],
+            top_action_memory_candidates: Vec::new(),
+            onboarding: MemoryOsOnboardingState {
+                schema_version: "test".to_string(),
+                status: "completed".to_string(),
+                started_at: None,
+                completed_at: Some("2026-05-04T00:00:00Z".to_string()),
+                sessions_processed: 3086,
+                shells_ingested: 40356,
+                corrections_ingested: 9,
+                imported_sources: Vec::new(),
+                checkpoint_count: 10,
+                journal_event_count: 20,
+            },
+            serving_policy: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resume_prompt_keeps_command_and_build_noise_out_of_startup_memory() {
+        let rendered = render_resume_prompt_from_overview(&sample_memory_os_overview());
+
+        assert!(rendered.contains("compiled from user prose, strategy, and friction signals"));
+        assert!(rendered.contains("Recent project focus: watcher-v2"));
+        assert!(rendered.contains("surfaces useful user prose"));
+        assert!(rendered.contains("exact commands stay in inspect/json evidence"));
+        assert!(!rendered.contains("40356"));
+        assert!(!rendered.contains("shell executions"));
+        assert!(!rendered.contains("5370"));
+        assert!(!rendered.contains("npm run build"));
+        assert!(!rendered.contains("cargo test"));
+        assert!(!rendered.contains("home-root"));
     }
 
     #[test]
