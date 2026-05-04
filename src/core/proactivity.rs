@@ -624,35 +624,13 @@ pub fn complete(options: &ProactivityCompleteOptions) -> Result<ProactivityCompl
         let _ = fs::remove_file(&claim_path);
     }
     if let Ok(tracker) = Tracker::new() {
-        let result_path_text = result_path.display().to_string();
-        let durable_status = match options.status {
-            ProactivityTerminalStatus::Complete => {
-                crate::core::tracking::ApprovalJobStatus::Completed
-            }
-            ProactivityTerminalStatus::Failed => crate::core::tracking::ApprovalJobStatus::Failed,
-            ProactivityTerminalStatus::Deferred => {
-                crate::core::tracking::ApprovalJobStatus::Deferred
-            }
-            ProactivityTerminalStatus::Suppressed => {
-                crate::core::tracking::ApprovalJobStatus::Rejected
-            }
-        };
-        let _ = tracker.set_approval_job_status(
-            &options.job_id,
-            durable_status,
-            None,
-            Some(result_path_text.as_str()),
-            Some(options.summary.as_str()),
+        let _ = update_terminal_approval_jobs(
+            &tracker,
+            &job,
+            &result_path,
+            options.status,
+            &options.summary,
         );
-        for intervention_job_id in &job.intervention_job_ids {
-            let _ = tracker.set_approval_job_status(
-                intervention_job_id,
-                durable_status,
-                None,
-                Some(result_path_text.as_str()),
-                Some(options.summary.as_str()),
-            );
-        }
     }
 
     Ok(ProactivityCompleteReport {
@@ -661,6 +639,39 @@ pub fn complete(options: &ProactivityCompleteOptions) -> Result<ProactivityCompl
         result_path: result_path.display().to_string(),
         status: options.status,
     })
+}
+
+fn update_terminal_approval_jobs(
+    tracker: &Tracker,
+    job: &ProactivityJob,
+    result_path: &Path,
+    status: ProactivityTerminalStatus,
+    summary: &str,
+) -> Result<()> {
+    let result_path_text = result_path.display().to_string();
+    let durable_status = match status {
+        ProactivityTerminalStatus::Complete => crate::core::tracking::ApprovalJobStatus::Completed,
+        ProactivityTerminalStatus::Failed => crate::core::tracking::ApprovalJobStatus::Failed,
+        ProactivityTerminalStatus::Deferred => crate::core::tracking::ApprovalJobStatus::Deferred,
+        ProactivityTerminalStatus::Suppressed => crate::core::tracking::ApprovalJobStatus::Rejected,
+    };
+    let _ = tracker.set_approval_job_status(
+        &job.job_id,
+        durable_status,
+        None,
+        Some(result_path_text.as_str()),
+        Some(summary),
+    )?;
+    if let Some(intervention_job_id) = job.intervention_job_ids.first() {
+        let _ = tracker.set_approval_job_status(
+            intervention_job_id,
+            durable_status,
+            None,
+            Some(result_path_text.as_str()),
+            Some(summary),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn status(options: &ProactivityScopeOptions) -> Result<ProactivityStatusReport> {
@@ -3406,6 +3417,133 @@ mod tests {
         };
         assert!(update_completed_index(&path, &result).expect("first insert"));
         assert!(!update_completed_index(&path, &result).expect("dedupe insert"));
+    }
+
+    #[test]
+    fn complete_marks_only_primary_intervention_complete() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
+        let job_id = "morning-sitesorted-business-codex-2026-05-04".to_string();
+        let primary_id =
+            "approval-sitesorted-business-2026-05-04-friction-fix-friction:autonomy-polling";
+        let secondary_id =
+            "approval-sitesorted-business-2026-05-04-friction-fix-friction:user-command-noise";
+        let tertiary_id =
+            "approval-sitesorted-business-2026-05-04-friction-fix-friction:behavior:claude";
+        let project_path = "C:/Users/OEM/Projects/sitesorted";
+        let job = ProactivityJob {
+            schema_version: "munin-proactivity-v1".to_string(),
+            job_type: "morning-proactivity".to_string(),
+            job_id: job_id.clone(),
+            scope_id: "sitesorted-business".to_string(),
+            local_date: "2026-05-04".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            provider: ProactivityProvider::Codex,
+            project_path: project_path.to_string(),
+            session_name: "codex".to_string(),
+            prompt_token: MORNING_PROMPT_TOKEN.to_string(),
+            brief_path: temp.path().join("brief.md").display().to_string(),
+            launch_instructions_path: temp.path().join("launch.md").display().to_string(),
+            decision_path: temp.path().join("decision.json").display().to_string(),
+            result_path: temp.path().join("result.json").display().to_string(),
+            continuity_active: false,
+            nudge_tasks: vec![
+                "Fix friction: Keep autonomous work moving without manual polling".to_string(),
+                "Fix friction: Stop surfacing command/build noise as memory".to_string(),
+                "Fix friction: Behavior change for claude".to_string(),
+            ],
+            intervention_job_ids: vec![
+                primary_id.to_string(),
+                secondary_id.to_string(),
+                tertiary_id.to_string(),
+            ],
+        };
+
+        for (id, item_id, title, evidence) in [
+            (
+                primary_id,
+                "friction:autonomy-polling",
+                "Fix friction: Keep autonomous work moving without manual polling",
+                r#"["99 autonomy/polling corrections"]"#,
+            ),
+            (
+                secondary_id,
+                "friction:user-command-noise",
+                "Fix friction: Stop surfacing command/build noise as memory",
+                r#"["user correction at 2026-04-19T21:25:29.597+00:00"]"#,
+            ),
+            (
+                tertiary_id,
+                "friction:behavior:claude",
+                "Fix friction: Behavior change for claude",
+                r#"["Shared contract with codex so both lanes behave the same under polling instructions"]"#,
+            ),
+        ] {
+            tracker
+                .upsert_approval_job_for_project(
+                    project_path,
+                    &crate::core::tracking::ApprovalJobInput {
+                        job_id: id.to_string(),
+                        scope: "project".to_string(),
+                        scope_target: Some(project_path.to_string()),
+                        local_date: "2026-05-04".to_string(),
+                        item_id: Some(item_id.to_string()),
+                        item_kind: "friction-fix".to_string(),
+                        title: title.to_string(),
+                        summary: "queued intervention".to_string(),
+                        status: crate::core::tracking::ApprovalJobStatus::Approved,
+                        source_kind: "strategy-nudge".to_string(),
+                        provider: Some("codex".to_string()),
+                        continuity_active: false,
+                        expected_effect: None,
+                        queue_path: Some(
+                            temp.path()
+                                .join("job.processing.json")
+                                .display()
+                                .to_string(),
+                        ),
+                        result_path: Some(job.result_path.clone()),
+                        evidence_json: evidence.to_string(),
+                        review_after: None,
+                        expires_at: None,
+                    },
+                )
+                .expect("seed intervention");
+        }
+
+        update_terminal_approval_jobs(
+            &tracker,
+            &job,
+            Path::new(&job.result_path),
+            ProactivityTerminalStatus::Complete,
+            "Primary fix completed.",
+        )
+        .expect("terminal approval update");
+
+        assert_eq!(
+            tracker
+                .get_approval_job(primary_id)
+                .expect("primary lookup")
+                .expect("primary")
+                .status,
+            crate::core::tracking::ApprovalJobStatus::Completed
+        );
+        assert_eq!(
+            tracker
+                .get_approval_job(secondary_id)
+                .expect("secondary lookup")
+                .expect("secondary")
+                .status,
+            crate::core::tracking::ApprovalJobStatus::Approved
+        );
+        assert_eq!(
+            tracker
+                .get_approval_job(tertiary_id)
+                .expect("tertiary lookup")
+                .expect("tertiary")
+                .status,
+            crate::core::tracking::ApprovalJobStatus::Approved
+        );
     }
 
     #[test]
