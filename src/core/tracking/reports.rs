@@ -10,9 +10,10 @@ use super::read_model::{
     correction_pattern_total_count,
 };
 use super::signals::{
-    build_memory_os_behavior_changes, build_memory_os_friction_fixes,
-    build_memory_os_friction_triggers, build_memory_os_imported_sources,
-    build_memory_os_misunderstandings, count_user_prose_signals, detect_user_prose_durable_fixes,
+    apply_completed_friction_statuses, build_memory_os_behavior_changes,
+    build_memory_os_friction_fixes, build_memory_os_friction_triggers,
+    build_memory_os_imported_sources, build_memory_os_misunderstandings, count_user_prose_signals,
+    detect_user_prose_durable_fixes, filter_completed_behavior_changes,
     memory_os_serving_policy_lines,
 };
 use super::{scope_project_path_or_current, Tracker};
@@ -213,6 +214,11 @@ impl Tracker {
         let likely_misunderstandings = build_memory_os_misunderstandings(&correction_patterns);
         let prose_signal_counts = count_user_prose_signals(&checkpoints);
         let durable_fixes = detect_user_prose_durable_fixes(project_path);
+        let completed_friction_jobs = self.get_approval_jobs_filtered(
+            500,
+            scope_project_path_or_current(scope, project_path).as_deref(),
+            Some(&[crate::core::tracking::ApprovalJobStatus::Completed]),
+        )?;
         let now = Utc::now();
         let autonomy_status = super::signals::autonomy_polling_friction_status(
             prose_signal_counts.latest_autonomy_at,
@@ -224,16 +230,19 @@ impl Tracker {
             durable_fixes.codex_autonomy_polling.as_ref(),
             now,
         );
-        let behavior_changes = build_memory_os_behavior_changes(
-            &by_source,
-            &redirects,
-            prose_signal_counts.autonomy,
-            Some(autonomy_status.as_str()),
-            Some(codex_autonomy_status.as_str()),
+        let behavior_changes = filter_completed_behavior_changes(
+            build_memory_os_behavior_changes(
+                &by_source,
+                &redirects,
+                prose_signal_counts.autonomy,
+                Some(autonomy_status.as_str()),
+                Some(codex_autonomy_status.as_str()),
+            ),
+            &completed_friction_jobs,
         );
         let new_unproven_friction =
             super::signals::build_memory_os_new_unproven_friction(&checkpoints);
-        let top_fixes = build_memory_os_friction_fixes(
+        let mut top_fixes = build_memory_os_friction_fixes(
             &correction_patterns,
             &likely_misunderstandings,
             &behavior_changes,
@@ -241,6 +250,7 @@ impl Tracker {
             &checkpoints,
             &durable_fixes,
         );
+        apply_completed_friction_statuses(&mut top_fixes, &completed_friction_jobs);
 
         Ok(crate::core::memory_os::MemoryOsFrictionReport {
             generated_at: Utc::now().to_rfc3339(),

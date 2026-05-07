@@ -225,6 +225,56 @@ pub(super) fn build_memory_os_friction_fixes(
     fixes
 }
 
+pub(super) fn apply_completed_friction_statuses(
+    fixes: &mut [crate::core::memory_os::MemoryOsFrictionFix],
+    completed: &[crate::core::tracking::ApprovalJobRecord],
+) {
+    for fix in fixes {
+        if completed_friction_fix_matches(
+            Some(fix.fix_id.as_str()),
+            "friction-fix",
+            &fix.evidence,
+            completed,
+        ) {
+            fix.status = "fixed".to_string();
+        }
+    }
+}
+
+pub(super) fn filter_completed_behavior_changes(
+    behavior_changes: Vec<crate::core::memory_os::MemoryOsBehaviorChangeRecommendation>,
+    completed: &[crate::core::tracking::ApprovalJobRecord],
+) -> Vec<crate::core::memory_os::MemoryOsBehaviorChangeRecommendation> {
+    behavior_changes
+        .into_iter()
+        .filter(|change| {
+            let item_id = format!("friction:behavior:{}", change.target_agent);
+            !completed_friction_fix_matches(
+                Some(item_id.as_str()),
+                "friction-fix",
+                &change.evidence,
+                completed,
+            )
+        })
+        .collect()
+}
+
+fn completed_friction_fix_matches(
+    item_id: Option<&str>,
+    item_kind: &str,
+    evidence: &[String],
+    completed: &[crate::core::tracking::ApprovalJobRecord],
+) -> bool {
+    let Ok(current_evidence_json) = serde_json::to_string(evidence) else {
+        return false;
+    };
+    completed.iter().any(|record| {
+        record.item_kind == item_kind
+            && record.item_id.as_deref() == item_id
+            && record.evidence_json == current_evidence_json
+    })
+}
+
 #[derive(Debug, Default, Clone)]
 pub(super) struct UserProseSignalCounts {
     pub(super) command_noise: usize,
@@ -1073,6 +1123,112 @@ mod tests {
                 .any(|rec| rec.target_agent == "claude" && rec.change.contains("long-running")),
             "codex-global durable evidence must not suppress claude behavior rules"
         );
+    }
+
+    fn completed_friction_record(
+        item_id: &str,
+        evidence: &[String],
+    ) -> crate::core::tracking::ApprovalJobRecord {
+        let timestamp = DateTime::parse_from_rfc3339("2026-05-02T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        crate::core::tracking::ApprovalJobRecord {
+            job_id: format!("approval-test-{item_id}"),
+            created_at: timestamp,
+            updated_at: timestamp,
+            project_path: "C:/project".to_string(),
+            scope: "project".to_string(),
+            scope_target: Some("C:/project".to_string()),
+            local_date: "2026-05-02".to_string(),
+            item_id: Some(item_id.to_string()),
+            item_kind: "friction-fix".to_string(),
+            title: format!("Fix {item_id}"),
+            summary: "completed".to_string(),
+            status: crate::core::tracking::ApprovalJobStatus::Completed,
+            source_kind: "strategy-nudge".to_string(),
+            provider: Some("codex".to_string()),
+            continuity_active: false,
+            expected_effect: None,
+            queue_path: None,
+            result_path: None,
+            evidence_json: serde_json::to_string(evidence).expect("evidence json"),
+            review_after: None,
+            expires_at: None,
+            last_reviewed_at: None,
+            closure_reason: Some("done".to_string()),
+        }
+    }
+
+    #[test]
+    fn completed_friction_statuses_fix_unchanged_evidence_only() {
+        let completed_evidence = vec!["99 autonomy/polling corrections".to_string()];
+        let completed = vec![completed_friction_record(
+            "friction:autonomy-polling",
+            &completed_evidence,
+        )];
+        let mut fixes = vec![
+            crate::core::memory_os::MemoryOsFrictionFix {
+                fix_id: "friction:autonomy-polling".to_string(),
+                title: "Keep autonomous work moving without manual polling".to_string(),
+                impact: "high".to_string(),
+                status: "active".to_string(),
+                summary: "old signal".to_string(),
+                permanent_fix: "poll".to_string(),
+                evidence: completed_evidence,
+                score: 120,
+            },
+            crate::core::memory_os::MemoryOsFrictionFix {
+                fix_id: "friction:behavior:claude".to_string(),
+                title: "Behavior change for claude".to_string(),
+                impact: "medium".to_string(),
+                status: "active".to_string(),
+                summary: "new signal".to_string(),
+                permanent_fix: "poll".to_string(),
+                evidence: vec![
+                    "99 autonomy/polling corrections".to_string(),
+                    "newer correction after completion".to_string(),
+                ],
+                score: 60,
+            },
+        ];
+
+        apply_completed_friction_statuses(&mut fixes, &completed);
+
+        assert_eq!(fixes[0].status, "fixed");
+        assert_eq!(fixes[1].status, "active");
+    }
+
+    #[test]
+    fn completed_behavior_changes_are_filtered_by_exact_evidence() {
+        let completed_evidence = vec![
+            "99 autonomy/polling corrections".to_string(),
+            "Shared contract with codex so both lanes behave the same under polling instructions"
+                .to_string(),
+        ];
+        let completed = vec![completed_friction_record(
+            "friction:behavior:claude",
+            &completed_evidence,
+        )];
+        let changes = vec![
+            crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
+                target_agent: "claude".to_string(),
+                change: "When the user asks for polling or long-running work, keep iterating."
+                    .to_string(),
+                rationale: "old signal".to_string(),
+                evidence: completed_evidence,
+            },
+            crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
+                target_agent: "codex".to_string(),
+                change: "Use Memory OS first.".to_string(),
+                rationale: "different behavior".to_string(),
+                evidence: vec!["policy".to_string()],
+            },
+        ];
+
+        let filtered = filter_completed_behavior_changes(changes, &completed);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].target_agent, "codex");
     }
 
     #[test]
