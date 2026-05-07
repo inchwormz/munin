@@ -195,16 +195,20 @@ pub(super) fn build_memory_os_friction_fixes(
     durable_fixes: &UserProseDurableFixes,
 ) -> Vec<crate::core::memory_os::MemoryOsFrictionFix> {
     let mut fixes = Vec::new();
-    fixes.extend(user_prose_friction_fixes(
-        checkpoints,
-        durable_fixes,
-        Utc::now(),
-    ));
+    let now = Utc::now();
+    let prose_signal_counts = count_user_prose_signals(checkpoints);
+    fixes.extend(user_prose_friction_fixes(checkpoints, durable_fixes, now));
     fixes.extend(command_friction_fixes(
         correction_patterns,
         likely_misunderstandings,
     ));
-    fixes.extend(behavior_change_friction_fixes(behavior_changes, redirects));
+    fixes.extend(behavior_change_friction_fixes(
+        behavior_changes,
+        redirects,
+        durable_fixes,
+        prose_signal_counts.latest_autonomy_at,
+        now,
+    ));
 
     let mut seen = HashSet::new();
     fixes.retain(|fix| seen.insert(fix.fix_id.clone()));
@@ -239,11 +243,17 @@ pub(super) struct DurableFrictionFixEvidence {
 #[derive(Debug, Default, Clone)]
 pub(super) struct UserProseDurableFixes {
     pub(super) autonomy_polling: Option<DurableFrictionFixEvidence>,
+    pub(super) codex_autonomy_polling: Option<DurableFrictionFixEvidence>,
 }
 
 pub(super) fn detect_user_prose_durable_fixes(project_path: Option<&str>) -> UserProseDurableFixes {
+    let autonomy_polling = find_durable_autonomy_polling_instruction(project_path);
+    let codex_autonomy_polling = autonomy_polling
+        .clone()
+        .or_else(|| find_codex_durable_autonomy_polling_instruction(project_path));
     UserProseDurableFixes {
-        autonomy_polling: find_durable_autonomy_polling_instruction(project_path),
+        autonomy_polling,
+        codex_autonomy_polling,
     }
 }
 
@@ -545,7 +555,32 @@ fn find_durable_autonomy_polling_instruction(
     project_path: Option<&str>,
 ) -> Option<DurableFrictionFixEvidence> {
     let start = PathBuf::from(resolved_project_path(project_path));
-    let agents_path = find_nearest_agents_file(&start)?;
+    find_nearest_agents_file(&start).and_then(durable_autonomy_polling_instruction_at)
+}
+
+fn find_codex_durable_autonomy_polling_instruction(
+    project_path: Option<&str>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_codex_durable_autonomy_polling_instruction_with_global_candidates(
+        project_path,
+        global_codex_agents_candidates(),
+    )
+}
+
+fn find_codex_durable_autonomy_polling_instruction_with_global_candidates(
+    project_path: Option<&str>,
+    global_agents_candidates: Vec<PathBuf>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_durable_autonomy_polling_instruction(project_path).or_else(|| {
+        global_agents_candidates
+            .into_iter()
+            .find_map(durable_autonomy_polling_instruction_at)
+    })
+}
+
+fn durable_autonomy_polling_instruction_at(
+    agents_path: PathBuf,
+) -> Option<DurableFrictionFixEvidence> {
     let contents = std::fs::read_to_string(&agents_path).ok()?;
     if !agents_file_codifies_autonomy_polling(&contents) {
         return None;
@@ -560,6 +595,31 @@ fn find_durable_autonomy_polling_instruction(
         path: agents_path.display().to_string(),
         codified_at,
     })
+}
+
+fn global_codex_agents_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        if let Some(candidate) = codex_home_agents_candidate(&codex_home) {
+            candidates.push(candidate);
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".codex").join("AGENTS.md"));
+    }
+    candidates
+}
+
+fn codex_home_agents_candidate(codex_home: &str) -> Option<PathBuf> {
+    let trimmed = codex_home.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return None;
+    }
+    Some(path.join("AGENTS.md"))
 }
 
 fn find_nearest_agents_file(start: &Path) -> Option<PathBuf> {
@@ -660,6 +720,9 @@ fn command_friction_fixes(
 fn behavior_change_friction_fixes(
     behavior_changes: &[crate::core::memory_os::MemoryOsBehaviorChangeRecommendation],
     redirects: &crate::core::memory_os::MemoryOsRedirectSummary,
+    durable_fixes: &UserProseDurableFixes,
+    latest_autonomy_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
 ) -> Vec<crate::core::memory_os::MemoryOsFrictionFix> {
     let mut fixes = Vec::new();
     if redirects.redirects > 0 {
@@ -703,18 +766,57 @@ fn behavior_change_friction_fixes(
         {
             continue;
         }
+        let (status, durable_fix) =
+            behavior_change_friction_status(change, durable_fixes, latest_autonomy_at, now);
+        if status == "retired" {
+            continue;
+        }
+        let mut evidence = change.evidence.iter().take(3).cloned().collect::<Vec<_>>();
+        if let Some(durable) = durable_fix {
+            evidence.push(format!("durable instruction codified in {}", durable.path));
+            if latest_autonomy_at.is_some_and(|latest| latest > durable.codified_at) {
+                evidence.push("newer autonomy correction exists after codification".to_string());
+            }
+        }
         fixes.push(crate::core::memory_os::MemoryOsFrictionFix {
             fix_id: format!("friction:behavior:{}", change.target_agent),
             title: format!("Behavior change for {}", change.target_agent),
             impact: "medium".to_string(),
-            status: "active".to_string(),
+            status,
             summary: change.rationale.clone(),
             permanent_fix: change.change.clone(),
-            evidence: change.evidence.iter().take(3).cloned().collect(),
+            evidence,
             score: 60,
         });
     }
     fixes
+}
+
+fn behavior_change_friction_status<'a>(
+    change: &crate::core::memory_os::MemoryOsBehaviorChangeRecommendation,
+    durable_fixes: &'a UserProseDurableFixes,
+    latest_autonomy_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> (String, Option<&'a DurableFrictionFixEvidence>) {
+    let durable_fix =
+        if change.target_agent == "codex" && is_autonomy_polling_behavior_change(change) {
+            durable_fixes.codex_autonomy_polling.as_ref()
+        } else {
+            None
+        };
+    let status = durable_fix
+        .map(|durable| autonomy_polling_friction_status(latest_autonomy_at, Some(durable), now))
+        .unwrap_or_else(|| "active".to_string());
+    (status, durable_fix)
+}
+
+fn is_autonomy_polling_behavior_change(
+    change: &crate::core::memory_os::MemoryOsBehaviorChangeRecommendation,
+) -> bool {
+    let lowered = change.change.to_ascii_lowercase();
+    lowered.contains("polling")
+        || lowered.contains("iterating until")
+        || lowered.contains("concrete blocker")
 }
 
 fn friction_fix_status(count: usize, successful: usize, failed: usize) -> String {
@@ -752,21 +854,21 @@ pub(super) fn build_memory_os_behavior_changes(
     redirects: &crate::core::memory_os::MemoryOsRedirectSummary,
     autonomy_count: usize,
     autonomy_friction_status: Option<&str>,
+    codex_autonomy_friction_status: Option<&str>,
 ) -> Vec<crate::core::memory_os::MemoryOsBehaviorChangeRecommendation> {
     let mut recommendations = Vec::new();
 
-    let autonomy_rule_needed = autonomy_count > 0
-        && !matches!(
-            autonomy_friction_status,
-            Some("codified" | "fixed" | "retired")
-        );
+    let autonomy_rule_needed =
+        autonomy_count > 0 && !friction_status_is_durable_terminal(autonomy_friction_status);
+    let codex_autonomy_rule_needed = autonomy_rule_needed
+        && !friction_status_is_durable_terminal(codex_autonomy_friction_status);
 
-    if autonomy_rule_needed {
+    if codex_autonomy_rule_needed || autonomy_rule_needed {
         let autonomy_rationale = format!(
             "User has asked for stronger autonomous polling/approval behavior {autonomy_count} times; treat any 'poll', 'keep going', 'until done', or long-running instruction as an infinite-loop contract.",
         );
-        recommendations.push(
-            crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
+        if codex_autonomy_rule_needed {
+            recommendations.push(crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
                 target_agent: "codex".to_string(),
                 change: "When a task calls for polling, waiting, or iterating until something is solved, keep cycling without pausing to ask \"should I continue?\". Stop only when the task is verified solved or a concrete blocker is recorded.".to_string(),
                 rationale: autonomy_rationale.clone(),
@@ -774,10 +876,10 @@ pub(super) fn build_memory_os_behavior_changes(
                     format!("{autonomy_count} autonomy/polling corrections"),
                     "Codex is the bigger offender for mid-loop pauses".to_string(),
                 ],
-            },
-        );
-        recommendations.push(
-            crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
+            });
+        }
+        if autonomy_rule_needed {
+            recommendations.push(crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
                 target_agent: "claude".to_string(),
                 change: "When the user asks for polling or long-running work, keep iterating until the task is solved or a concrete blocker is recorded. Do not return to the prompt between cycles or summarise progress in place of continuing.".to_string(),
                 rationale: autonomy_rationale,
@@ -785,8 +887,8 @@ pub(super) fn build_memory_os_behavior_changes(
                     format!("{autonomy_count} autonomy/polling corrections"),
                     "Shared contract with codex so both lanes behave the same under polling instructions".to_string(),
                 ],
-            },
-        );
+            });
+        }
     }
 
     recommendations.push(
@@ -849,6 +951,10 @@ pub(super) fn build_memory_os_behavior_changes(
     recommendations
 }
 
+fn friction_status_is_durable_terminal(status: Option<&str>) -> bool {
+    matches!(status, Some("codified" | "fixed" | "retired"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,7 +1008,8 @@ mod tests {
         let by_source = Vec::new();
         let redirects = crate::core::memory_os::MemoryOsRedirectSummary::default();
 
-        let without_signal = build_memory_os_behavior_changes(&by_source, &redirects, 0, None);
+        let without_signal =
+            build_memory_os_behavior_changes(&by_source, &redirects, 0, None, None);
         assert!(
             !without_signal
                 .iter()
@@ -910,7 +1017,7 @@ mod tests {
             "no polling rule should appear when autonomy_count is 0"
         );
 
-        let with_signal = build_memory_os_behavior_changes(&by_source, &redirects, 154, None);
+        let with_signal = build_memory_os_behavior_changes(&by_source, &redirects, 154, None, None);
         let codex_rule = with_signal
             .iter()
             .find(|rec| rec.target_agent == "codex" && rec.change.contains("polling"))
@@ -933,12 +1040,92 @@ mod tests {
         let redirects = crate::core::memory_os::MemoryOsRedirectSummary::default();
 
         let codified =
-            build_memory_os_behavior_changes(&by_source, &redirects, 154, Some("codified"));
+            build_memory_os_behavior_changes(&by_source, &redirects, 154, Some("codified"), None);
 
         assert!(
             !codified.iter().any(|rec| rec.change.contains("polling")),
             "durably codified polling rules should stop surfacing as behavior changes"
         );
+    }
+
+    #[test]
+    fn behavior_changes_respect_codex_specific_polling_status() {
+        let by_source = Vec::new();
+        let redirects = crate::core::memory_os::MemoryOsRedirectSummary::default();
+
+        let recommendations = build_memory_os_behavior_changes(
+            &by_source,
+            &redirects,
+            154,
+            Some("active"),
+            Some("codified"),
+        );
+
+        assert!(
+            !recommendations
+                .iter()
+                .any(|rec| rec.target_agent == "codex" && rec.change.contains("polling")),
+            "codex-global durable evidence should suppress the codex polling behavior rule"
+        );
+        assert!(
+            recommendations
+                .iter()
+                .any(|rec| rec.target_agent == "claude" && rec.change.contains("long-running")),
+            "codex-global durable evidence must not suppress claude behavior rules"
+        );
+    }
+
+    #[test]
+    fn codex_global_agents_codifies_only_codex_behavior_fix() {
+        let codified_at = DateTime::parse_from_rfc3339("2026-05-01T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let durable_fixes = UserProseDurableFixes {
+            autonomy_polling: None,
+            codex_autonomy_polling: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
+                codified_at,
+            }),
+        };
+        let behavior_changes = vec![
+            crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
+                target_agent: "codex".to_string(),
+                change: "When a task calls for polling, keep cycling until verified solved."
+                    .to_string(),
+                rationale: "codex rationale".to_string(),
+                evidence: vec!["99 autonomy/polling corrections".to_string()],
+            },
+            crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
+                target_agent: "claude".to_string(),
+                change: "When a task calls for polling, keep cycling until verified solved."
+                    .to_string(),
+                rationale: "claude rationale".to_string(),
+                evidence: vec!["99 autonomy/polling corrections".to_string()],
+            },
+        ];
+
+        let fixes = behavior_change_friction_fixes(
+            &behavior_changes,
+            &crate::core::memory_os::MemoryOsRedirectSummary::default(),
+            &durable_fixes,
+            Some(codified_at - Duration::days(1)),
+            codified_at + Duration::days(1),
+        );
+
+        let codex = fixes
+            .iter()
+            .find(|fix| fix.fix_id == "friction:behavior:codex")
+            .expect("codex fix");
+        let claude = fixes
+            .iter()
+            .find(|fix| fix.fix_id == "friction:behavior:claude")
+            .expect("claude fix");
+        assert_eq!(codex.status, "codified");
+        assert!(codex
+            .evidence
+            .iter()
+            .any(|item| item.contains("durable instruction codified")));
+        assert_eq!(claude.status, "active");
     }
 
     #[test]
@@ -993,6 +1180,41 @@ mod tests {
         assert!(!agents_file_codifies_autonomy_polling(
             "You are autonomous, but ask before proceeding."
         ));
+    }
+
+    #[test]
+    fn durable_autonomy_polling_falls_back_to_codex_global_agents() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project").join("child");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+        let agents_path = codex_home.join("AGENTS.md");
+        std::fs::write(
+            &agents_path,
+            "AUTONOMY DIRECTIVE\nYOU ARE AN AUTONOMOUS CODING AGENT.\nEXECUTE TASKS TO COMPLETION WITHOUT ASKING FOR PERMISSION.\nDO NOT STOP TO ASK \"SHOULD I PROCEED?\"",
+        )
+        .expect("write global agents");
+
+        let durable = find_codex_durable_autonomy_polling_instruction_with_global_candidates(
+            Some(project.to_string_lossy().as_ref()),
+            vec![agents_path.clone()],
+        )
+        .expect("global Codex AGENTS should codify polling");
+
+        assert_eq!(durable.path, agents_path.display().to_string());
+    }
+
+    #[test]
+    fn codex_home_agents_candidate_requires_absolute_non_empty_path() {
+        assert!(codex_home_agents_candidate("").is_none());
+        assert!(codex_home_agents_candidate("relative/.codex").is_none());
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let candidate = codex_home_agents_candidate(temp.path().to_string_lossy().as_ref())
+            .expect("absolute candidate");
+
+        assert_eq!(candidate, temp.path().join("AGENTS.md"));
     }
 
     #[test]

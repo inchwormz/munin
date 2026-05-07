@@ -213,16 +213,23 @@ impl Tracker {
         let likely_misunderstandings = build_memory_os_misunderstandings(&correction_patterns);
         let prose_signal_counts = count_user_prose_signals(&checkpoints);
         let durable_fixes = detect_user_prose_durable_fixes(project_path);
+        let now = Utc::now();
         let autonomy_status = super::signals::autonomy_polling_friction_status(
             prose_signal_counts.latest_autonomy_at,
             durable_fixes.autonomy_polling.as_ref(),
-            Utc::now(),
+            now,
+        );
+        let codex_autonomy_status = super::signals::autonomy_polling_friction_status(
+            prose_signal_counts.latest_autonomy_at,
+            durable_fixes.codex_autonomy_polling.as_ref(),
+            now,
         );
         let behavior_changes = build_memory_os_behavior_changes(
             &by_source,
             &redirects,
             prose_signal_counts.autonomy,
             Some(autonomy_status.as_str()),
+            Some(codex_autonomy_status.as_str()),
         );
         let new_unproven_friction =
             super::signals::build_memory_os_new_unproven_friction(&checkpoints);
