@@ -255,6 +255,31 @@ impl Tracker {
         )
     }
 
+    pub fn record_memory_os_read_model_action_observation_for_project(
+        &self,
+        project_path: &str,
+        source_kind: &str,
+        cue: &crate::core::memory_os::MemoryOsActionCue,
+        action: &crate::core::memory_os::MemoryOsAction,
+        source_ref: &str,
+        observed_at: &str,
+    ) -> Result<()> {
+        let flags = crate::core::config::memory_os();
+        if !flags.read_model_v1 && !flags.action_v1 {
+            return Ok(());
+        }
+
+        self.record_memory_os_action_observation(
+            project_path,
+            source_kind,
+            None,
+            cue,
+            action,
+            source_ref,
+            observed_at,
+        )
+    }
+
     pub fn record_memory_os_action_execution(
         &self,
         execution_kind: &str,
@@ -305,6 +330,49 @@ impl Tracker {
             return Ok(());
         }
 
+        self.insert_memory_os_action_execution_at_for_project(
+            project_path,
+            execution_kind,
+            command_sig,
+            subject_ref,
+            exit_code,
+            observed_at,
+        )
+    }
+
+    pub fn record_memory_os_read_model_action_execution_at_for_project(
+        &self,
+        project_path: &str,
+        execution_kind: &str,
+        command_sig: &str,
+        subject_ref: Option<&str>,
+        exit_code: i32,
+        observed_at: &str,
+    ) -> Result<()> {
+        let flags = crate::core::config::memory_os();
+        if !flags.read_model_v1 && !flags.action_v1 {
+            return Ok(());
+        }
+
+        self.insert_memory_os_action_execution_at_for_project(
+            project_path,
+            execution_kind,
+            command_sig,
+            subject_ref,
+            exit_code,
+            observed_at,
+        )
+    }
+
+    fn insert_memory_os_action_execution_at_for_project(
+        &self,
+        project_path: &str,
+        execution_kind: &str,
+        command_sig: &str,
+        subject_ref: Option<&str>,
+        exit_code: i32,
+        observed_at: &str,
+    ) -> Result<()> {
         let execution_id = format!(
             "action-execution-{}",
             hash_text(&format!(

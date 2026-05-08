@@ -20,7 +20,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v10";
+const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v11";
 const ONBOARDING_STATE_FILE: &str = "memory_os_session_onboarding.json";
 const ONBOARDING_LOCK_DB_FILE: &str = "memory_os_session_onboarding.lock.sqlite";
 const INCREMENTAL_CHECK_INTERVAL_MINUTES: i64 = 15;
@@ -376,7 +376,7 @@ fn replay_session(tracker: &Tracker, session: &SessionRecord) -> Result<()> {
                 correction.pair.right_command, correction.pair.wrong_command
             )),
         };
-        tracker.record_memory_os_action_observation_for_project(
+        tracker.record_memory_os_read_model_action_observation_for_project(
             &project_path,
             "session-correction",
             &cue,
@@ -390,7 +390,7 @@ fn replay_session(tracker: &Tracker, session: &SessionRecord) -> Result<()> {
             &observed_at,
         )?;
         if let Some((observed_at, exit_code)) = correction_execution_details(session, correction) {
-            tracker.record_memory_os_action_execution_at_for_project(
+            tracker.record_memory_os_read_model_action_execution_at_for_project(
                 &project_path,
                 "session-replay",
                 &correction.pair.right_command,
@@ -1124,6 +1124,10 @@ mod tests {
         CommandOutcome, SessionSource, ShellExecution, UserPrompt,
     };
     use chrono::DateTime;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn sample_session() -> SessionRecord {
         SessionRecord {
@@ -1183,6 +1187,47 @@ mod tests {
             .selected_items
             .iter()
             .any(|item| { item.section == "user_prompts" && item.summary == "Fix the CLI flow" }));
+    }
+
+    #[test]
+    fn replay_session_writes_corrections_into_read_model_when_action_flag_is_off() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let tmp = TempDir::new().expect("temp dir");
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::create_dir_all(&data_dir).expect("data dir");
+        std::env::set_var("MUNIN_CONFIG_DIR", &config_dir);
+        std::env::set_var("MUNIN_DATA_DIR", &data_dir);
+        std::env::set_var("MUNIN_MEMORYOS_READ_MODEL_V1", "true");
+        std::env::set_var("MUNIN_MEMORYOS_ACTION_V1", "false");
+
+        let tracker =
+            Tracker::new_at_path(&tmp.path().join("tracking.db")).expect("tracker at temp path");
+        replay_session(&tracker, &sample_session()).expect("replay session");
+
+        let report = tracker
+            .get_memory_os_friction_report(
+                crate::core::memory_os::MemoryOsInspectionScope::User,
+                None,
+            )
+            .expect("friction report");
+
+        assert_eq!(report.repeated_corrections.len(), 1);
+        assert_eq!(
+            report.repeated_corrections[0].wrong_command,
+            "git commit --ammend"
+        );
+        assert_eq!(
+            report.repeated_corrections[0].corrected_command,
+            "git commit --amend"
+        );
+        assert_eq!(report.repeated_corrections[0].successful_replays, 1);
+
+        std::env::remove_var("MUNIN_CONFIG_DIR");
+        std::env::remove_var("MUNIN_DATA_DIR");
+        std::env::remove_var("MUNIN_MEMORYOS_READ_MODEL_V1");
+        std::env::remove_var("MUNIN_MEMORYOS_ACTION_V1");
     }
 
     #[test]
