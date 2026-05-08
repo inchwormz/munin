@@ -12,15 +12,19 @@ use crate::rewrite_engine::detector::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v10";
 const ONBOARDING_STATE_FILE: &str = "memory_os_session_onboarding.json";
+const ONBOARDING_LOCK_DB_FILE: &str = "memory_os_session_onboarding.lock.sqlite";
 const INCREMENTAL_CHECK_INTERVAL_MINUTES: i64 = 15;
+const BACKFILL_LOCK_TIMEOUT_SECONDS: u64 = 120;
 const MAX_SEMANTIC_ITEMS_PER_SESSION: usize = 8;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -103,11 +107,28 @@ pub fn get_memory_os_session_backfill_status() -> Result<SessionBackfillStatus> 
 }
 
 pub fn ensure_memory_os_session_backfill() -> Result<Option<SessionBackfillReport>> {
-    ensure_memory_os_session_backfill_with_force(false)
+    ensure_memory_os_session_backfill_internal(false, false)
+}
+
+pub fn refresh_memory_os_session_import_before_read() -> Result<()> {
+    ensure_memory_os_session_backfill_check_now()
+        .context("Failed to refresh Memory OS session import before reading compiled state")?;
+    Ok(())
+}
+
+pub fn ensure_memory_os_session_backfill_check_now() -> Result<Option<SessionBackfillReport>> {
+    ensure_memory_os_session_backfill_internal(false, true)
 }
 
 pub fn ensure_memory_os_session_backfill_with_force(
     force: bool,
+) -> Result<Option<SessionBackfillReport>> {
+    ensure_memory_os_session_backfill_internal(force, false)
+}
+
+fn ensure_memory_os_session_backfill_internal(
+    force: bool,
+    bypass_incremental_interval: bool,
 ) -> Result<Option<SessionBackfillReport>> {
     if cfg!(test)
         || std::env::var("MUNIN_SKIP_MEMORY_OS_ONBOARDING")
@@ -125,6 +146,7 @@ pub fn ensure_memory_os_session_backfill_with_force(
         return Ok(None);
     }
 
+    let _lock = acquire_backfill_lock()?;
     let mut state = load_state()?;
     if force {
         state.completed_at = None;
@@ -134,7 +156,7 @@ pub fn ensure_memory_os_session_backfill_with_force(
         state.shells_ingested = 0;
         state.corrections_ingested = 0;
     }
-    if !force && should_skip_incremental_backfill(&state) {
+    if !force && should_skip_incremental_backfill(&state, bypass_incremental_interval) {
         return Ok(None);
     }
 
@@ -197,8 +219,14 @@ pub fn ensure_memory_os_session_backfill_with_force(
     }))
 }
 
-fn should_skip_incremental_backfill(state: &SessionBackfillState) -> bool {
+fn should_skip_incremental_backfill(
+    state: &SessionBackfillState,
+    bypass_incremental_interval: bool,
+) -> bool {
     if state.schema_version != ONBOARDING_SCHEMA_VERSION || state.completed_at.is_none() {
+        return false;
+    }
+    if bypass_incremental_interval {
         return false;
     }
     if std::env::var("MUNIN_MEMORY_OS_FORCE_ONBOARDING")
@@ -1029,6 +1057,47 @@ fn onboarding_state_path() -> Result<PathBuf> {
     Ok(root.join(ONBOARDING_STATE_FILE))
 }
 
+fn onboarding_lock_path() -> Result<PathBuf> {
+    let root = crate::core::config::context_data_dir()?;
+    fs::create_dir_all(&root)?;
+    Ok(root.join(ONBOARDING_LOCK_DB_FILE))
+}
+
+struct SessionBackfillLock {
+    conn: Connection,
+}
+
+impl Drop for SessionBackfillLock {
+    fn drop(&mut self) {
+        let _ = self.conn.execute_batch("COMMIT;");
+    }
+}
+
+fn acquire_backfill_lock() -> Result<SessionBackfillLock> {
+    let path = onboarding_lock_path()?;
+    let conn = Connection::open(&path).with_context(|| {
+        format!(
+            "failed to open Memory OS session import lock {}",
+            path.display()
+        )
+    })?;
+    conn.busy_timeout(Duration::from_secs(BACKFILL_LOCK_TIMEOUT_SECONDS))
+        .with_context(|| {
+            format!(
+                "failed to configure Memory OS session import lock timeout at {}",
+                path.display()
+            )
+        })?;
+    conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")
+        .with_context(|| {
+            format!(
+                "Timed out waiting for Memory OS session import lock at {}",
+                path.display()
+            )
+        })?;
+    Ok(SessionBackfillLock { conn })
+}
+
 fn load_state() -> Result<SessionBackfillState> {
     let path = onboarding_state_path()?;
     if !path.exists() {
@@ -1163,7 +1232,8 @@ mod tests {
             last_checked_at: Some(Utc::now().to_rfc3339()),
             ..Default::default()
         };
-        assert!(should_skip_incremental_backfill(&fresh_state));
+        assert!(should_skip_incremental_backfill(&fresh_state, false));
+        assert!(!should_skip_incremental_backfill(&fresh_state, true));
 
         let stale_state = SessionBackfillState {
             last_checked_at: Some(
@@ -1172,12 +1242,12 @@ mod tests {
             ),
             ..fresh_state.clone()
         };
-        assert!(!should_skip_incremental_backfill(&stale_state));
+        assert!(!should_skip_incremental_backfill(&stale_state, false));
 
         let old_schema_state = SessionBackfillState {
             schema_version: "memory-os-session-onboarding-v2".to_string(),
             ..fresh_state
         };
-        assert!(!should_skip_incremental_backfill(&old_schema_state));
+        assert!(!should_skip_incremental_backfill(&old_schema_state, false));
     }
 }

@@ -173,6 +173,7 @@ struct RawSourceSummary {
 
 pub fn run_snapshot(project_path: Option<&str>, format: &str, _verbose: u8) -> Result<()> {
     validate_format(format)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     render_snapshot_with_tracker(&tracker, project_path, format)
@@ -231,6 +232,7 @@ fn render_snapshot_with_tracker(
 
 pub fn run_kernel(project_path: Option<&str>, format: &str, _verbose: u8) -> Result<()> {
     validate_format(format)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     render_kernel_with_tracker(&tracker, project_path, format)
@@ -293,6 +295,7 @@ fn render_kernel_with_tracker(
 
 pub fn run_actions(project_path: Option<&str>, format: &str, _verbose: u8) -> Result<()> {
     validate_format(format)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let candidates = tracker
@@ -351,6 +354,7 @@ pub fn run_overview(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let report = tracker
@@ -379,6 +383,7 @@ pub fn run_recall(
     if query.is_empty() {
         anyhow::bail!("munin recall needs a topic, for example: munin recall \"resolver\"");
     }
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let report = tracker
@@ -402,6 +407,7 @@ pub fn run_action_policy(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let report = tracker
@@ -425,6 +431,7 @@ pub fn run_profile(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let report = tracker
@@ -458,6 +465,7 @@ pub fn run_friction_filtered(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let mut report = tracker
@@ -482,6 +490,7 @@ pub fn run_trust(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
 
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     render_trust_with_tracker(&tracker, scope, project_path, format)
@@ -508,6 +517,7 @@ fn render_trust_with_tracker(
 
 pub fn run_promotion(format: &str, _verbose: u8) -> Result<()> {
     validate_format(format)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     println!("{}", render_promotion_with_tracker(&tracker, format)?);
     Ok(())
@@ -521,6 +531,7 @@ pub fn run_inspect(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let report = build_inspect_report(&tracker, scope, project_path)?;
     match format {
@@ -539,6 +550,7 @@ pub fn run_doctor(
 ) -> Result<()> {
     validate_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let report = build_doctor_report(&tracker, scope, project_path)?;
     match format {
@@ -558,6 +570,7 @@ pub fn run_brief(
 ) -> Result<()> {
     validate_brief_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let rendered = render_brief_with_tracker(
         &tracker,
@@ -584,6 +597,7 @@ pub fn run_startup_brief(
 
     validate_brief_format(format)?;
     let scope = validate_scope(scope, project_path)?;
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
     let onboarding = tracker
         .get_memory_os_onboarding_state_fast()

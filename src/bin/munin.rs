@@ -1993,9 +1993,26 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
         writes += 1;
         println!("Claude hook: {}", hook_path.display());
     }
+    let session_start_hook_path = home
+        .join(".claude")
+        .join("hooks")
+        .join("munin-session-start.js");
+    let session_start_hook_body =
+        include_str!("../assets/integrations/v1/shared/munin-session-start.js");
+    if write_installer_file(
+        &session_start_hook_path,
+        session_start_hook_body,
+        force,
+        dry_run,
+    )? {
+        writes += 1;
+        println!("Claude hook: {}", session_start_hook_path.display());
+    }
 
     let settings_path = home.join(".claude").join("settings.json");
     let command = format!("node {}", normalize_command_path(&hook_path));
+    let session_start_command =
+        format!("node {}", normalize_command_path(&session_start_hook_path));
     let mut settings = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .with_context(|| format!("failed to read {}", settings_path.display()))?;
@@ -2005,7 +2022,15 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
         serde_json::json!({})
     };
 
+    let mut settings_changed = false;
     if upsert_claude_user_prompt_hook(&mut settings, &command) {
+        settings_changed = true;
+    }
+    if upsert_claude_session_start_ingest_hook(&mut settings, &session_start_command) {
+        settings_changed = true;
+    }
+
+    if settings_changed {
         writes += 1;
         if dry_run {
             println!("would update Claude settings: {}", settings_path.display());
@@ -2065,6 +2090,50 @@ fn upsert_claude_user_prompt_hook(settings: &mut serde_json::Value, command: &st
     changed
 }
 
+fn upsert_claude_session_start_ingest_hook(
+    settings: &mut serde_json::Value,
+    command: &str,
+) -> bool {
+    if !settings.is_object() {
+        *settings = serde_json::json!({});
+    }
+    let root = settings
+        .as_object_mut()
+        .expect("object after normalization");
+    let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
+    if !hooks.is_object() {
+        *hooks = serde_json::json!({});
+    }
+    let hooks_obj = hooks.as_object_mut().expect("hooks object");
+    let entries = hooks_obj
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([{ "hooks": [] }]));
+    if !entries.is_array() {
+        *entries = serde_json::json!([]);
+    }
+    let entries_array = entries.as_array_mut().expect("entries array");
+    if entries_array
+        .iter()
+        .any(entry_contains_munin_session_start_hook)
+    {
+        return false;
+    }
+    entries_array.insert(
+        0,
+        serde_json::json!({
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": 120,
+                    "statusMessage": "Refreshing Munin Memory OS session import..."
+                }
+            ]
+        }),
+    );
+    true
+}
+
 fn entry_contains_munin_prompt_hook(entry: &serde_json::Value) -> bool {
     entry
         .get("hooks")
@@ -2074,6 +2143,21 @@ fn entry_contains_munin_prompt_hook(entry: &serde_json::Value) -> bool {
                 hook.get("command")
                     .and_then(|value| value.as_str())
                     .map(|existing| existing.contains("munin-runtime.js"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn entry_contains_munin_session_start_hook(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|value| value.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|value| value.as_str())
+                    .map(|existing| existing.contains("munin-session-start.js"))
                     .unwrap_or(false)
             })
         })
@@ -2178,6 +2262,24 @@ fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Resul
     if write_installer_file(&manifest_path, &plugin_manifest, force, dry_run)? {
         writes += 1;
         println!("Codex plugin: {}", manifest_path.display());
+    }
+    let session_start_hook_path = plugin_root.join("hooks").join("munin-session-start.js");
+    let session_start_hook_body =
+        include_str!("../assets/integrations/v1/shared/munin-session-start.js");
+    if write_installer_file(
+        &session_start_hook_path,
+        session_start_hook_body,
+        force,
+        dry_run,
+    )? {
+        writes += 1;
+        println!("Codex plugin hook: {}", session_start_hook_path.display());
+    }
+    let hooks_path = plugin_root.join("hooks").join("hooks.json");
+    let hooks_json = render_codex_hooks_json(&session_start_hook_path)?;
+    if write_installer_file(&hooks_path, &hooks_json, force, dry_run)? {
+        writes += 1;
+        println!("Codex plugin hooks: {}", hooks_path.display());
     }
     let umbrella = core::access_layer::intent_rules::UMBRELLA_SKILL;
     let path = plugin_root
@@ -2373,6 +2475,27 @@ fn render_codex_plugin_json() -> String {
         .replace("__MUNIN_VERSION__", env!("CARGO_PKG_VERSION"))
 }
 
+fn render_codex_hooks_json(session_start_hook_path: &Path) -> Result<String> {
+    let command = format!("node {}", normalize_command_path(session_start_hook_path));
+    let hooks = serde_json::json!({
+        "hooks": {
+            "SessionStart": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command,
+                            "timeout": 120,
+                            "statusMessage": "Refreshing Munin Memory OS session import"
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+    serde_json::to_string_pretty(&hooks).context("failed to render Codex hooks JSON")
+}
+
 fn validate_integration_asset_bundle() -> Result<usize> {
     let manifest_text = include_str!("../assets/integrations/v1/manifest.json");
     let manifest: serde_json::Value = serde_json::from_str(manifest_text)
@@ -2413,6 +2536,22 @@ fn validate_integration_asset_bundle() -> Result<usize> {
     if contains_forbidden_context_runtime_reference(&plugin_text) {
         anyhow::bail!("rendered codex plugin manifest still contains a Context runtime reference");
     }
+    if plugin_json.get("hooks").and_then(|value| value.as_str()) != Some("./hooks/hooks.json") {
+        anyhow::bail!("rendered codex plugin manifest does not declare lifecycle hooks");
+    }
+    let codex_hooks_text = render_codex_hooks_json(Path::new(
+        "C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js",
+    ))?;
+    let codex_hooks_json: serde_json::Value = serde_json::from_str(&codex_hooks_text)
+        .context("failed to parse rendered codex hooks JSON")?;
+    if codex_hooks_json
+        .pointer("/hooks/SessionStart/0/hooks/0/command")
+        .and_then(|value| value.as_str())
+        .map(|command| command.contains("munin-session-start.js"))
+        != Some(true)
+    {
+        anyhow::bail!("rendered codex hooks JSON does not invoke the Munin session-start hook");
+    }
     let claude_hook = include_str!("../assets/integrations/v1/claude/munin-runtime.js");
     if !claude_hook.contains("'runtime'") || !claude_hook.contains("'--surface', 'auto'") {
         anyhow::bail!("Claude runtime hook does not invoke the Munin runtime contract");
@@ -2449,6 +2588,9 @@ fn integration_asset_content(path: &str) -> Option<&'static str> {
         )),
         "claude/munin-runtime.js" => Some(include_str!(
             "../assets/integrations/v1/claude/munin-runtime.js"
+        )),
+        "shared/munin-session-start.js" => Some(include_str!(
+            "../assets/integrations/v1/shared/munin-session-start.js"
         )),
         "codex/plugin.json.tmpl" => Some(include_str!(
             "../assets/integrations/v1/codex/plugin.json.tmpl"
@@ -2725,6 +2867,101 @@ mod tests {
         assert!(!serde_json::to_string(&settings)
             .expect("settings json")
             .contains("context-hint.js"));
+    }
+
+    #[test]
+    fn claude_settings_upsert_adds_munin_session_start_ingest_hook_once() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "node C:/Users/OEM/.claude/hooks/memory-os-health.js 2>/dev/null || true",
+                                "timeout": 8000
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let changed = upsert_claude_session_start_ingest_hook(
+            &mut settings,
+            "node C:/Users/OEM/.claude/hooks/munin-session-start.js",
+        );
+        let unchanged = upsert_claude_session_start_ingest_hook(
+            &mut settings,
+            "node C:/Users/OEM/.claude/hooks/munin-session-start.js",
+        );
+        let entries = settings
+            .pointer("/hooks/SessionStart")
+            .and_then(|value| value.as_array())
+            .expect("entries");
+
+        assert!(changed);
+        assert!(!unchanged);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            settings
+                .pointer("/hooks/SessionStart/0/hooks/0/command")
+                .and_then(|value| value.as_str()),
+            Some("node C:/Users/OEM/.claude/hooks/munin-session-start.js")
+        );
+        assert_eq!(
+            settings
+                .pointer("/hooks/SessionStart/0/hooks/0/timeout")
+                .and_then(|value| value.as_i64()),
+            Some(120)
+        );
+        assert_eq!(
+            settings
+                .pointer("/hooks/SessionStart/1/hooks/0/command")
+                .and_then(|value| value.as_str()),
+            Some("node C:/Users/OEM/.claude/hooks/memory-os-health.js 2>/dev/null || true")
+        );
+    }
+
+    #[test]
+    fn codex_plugin_declares_quiet_session_start_ingest_hook() {
+        let plugin_json: serde_json::Value =
+            serde_json::from_str(&render_codex_plugin_json()).expect("plugin json");
+        assert_eq!(
+            plugin_json.get("hooks").and_then(|value| value.as_str()),
+            Some("./hooks/hooks.json")
+        );
+
+        let hooks_text = render_codex_hooks_json(Path::new(
+            "C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js",
+        ))
+        .expect("hooks json");
+        let hooks_json: serde_json::Value =
+            serde_json::from_str(&hooks_text).expect("hooks json parse");
+        assert!(hooks_json
+            .pointer("/hooks/SessionStart/0/matcher")
+            .is_none());
+        assert_eq!(
+            hooks_json
+                .pointer("/hooks/SessionStart/0/hooks/0/timeout")
+                .and_then(|value| value.as_i64()),
+            Some(120)
+        );
+        assert!(hooks_json
+            .pointer("/hooks/SessionStart/0/hooks/0/command")
+            .and_then(|value| value.as_str())
+            .expect("command")
+            .contains("munin-session-start.js"));
+    }
+
+    #[test]
+    fn shared_session_start_hook_bypasses_incremental_throttle_without_force_replay() {
+        let script = include_str!("../assets/integrations/v1/shared/munin-session-start.js");
+
+        assert!(script.contains("MUNIN_MEMORY_OS_FORCE_ONBOARDING"));
+        assert!(script.contains("'memory-os', 'ingest', '--format', 'json'"));
+        assert!(!script.contains("'--force'"));
+        assert!(script.contains("stdio: 'ignore'"));
     }
 
     #[test]

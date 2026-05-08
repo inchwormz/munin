@@ -43,6 +43,7 @@ impl SessionBrainRenderMode {
 }
 
 pub fn run_inspect_current(format: &str, _verbose: u8) -> Result<()> {
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let brain = build_current_session_brain()?;
     println!(
         "{}",

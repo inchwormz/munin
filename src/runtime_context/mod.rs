@@ -413,11 +413,13 @@ pub fn render_packet(
 }
 
 pub fn build_current_brain_packet() -> Result<RuntimeContextPacketV1> {
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let brain = crate::session_brain::build_current_session_brain()?;
     Ok(packet_from_session_brain(&brain))
 }
 
 pub fn build_current_resume_packet(scope: &str) -> Result<RuntimeContextPacketV1> {
+    crate::analytics::session_backfill::refresh_memory_os_session_import_before_read()?;
     let tracker = Tracker::new()?;
     let scope = parse_scope(scope)?;
     let onboarding = tracker.get_memory_os_onboarding_state_fast()?;

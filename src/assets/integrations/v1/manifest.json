@@ -35,6 +35,10 @@
       "kind": "claude-user-prompt-submit-hook"
     },
     {
+      "path": "shared/munin-session-start.js",
+      "kind": "shared-session-start-ingest-hook"
+    },
+    {
       "path": "codex/plugin.json.tmpl",
       "kind": "codex-plugin-manifest"
     }
