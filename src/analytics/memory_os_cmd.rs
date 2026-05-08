@@ -2035,12 +2035,7 @@ fn doctor_severity_rank(severity: &str) -> i32 {
 }
 
 fn load_onboarding_status() -> Result<LoadedOnboardingStatus> {
-    let base = dirs::data_local_dir()
-        .or_else(dirs::data_dir)
-        .ok_or_else(|| anyhow!("could not determine local data directory"))?;
-    let path = base
-        .join("context")
-        .join("memory_os_session_onboarding.json");
+    let path = memory_os_onboarding_status_path()?;
     if !path.exists() {
         return Ok(LoadedOnboardingStatus {
             status: MemoryOsInspectOnboardingStatus {
@@ -2132,6 +2127,10 @@ fn load_onboarding_status() -> Result<LoadedOnboardingStatus> {
         },
         imported_ids,
     })
+}
+
+fn memory_os_onboarding_status_path() -> Result<std::path::PathBuf> {
+    Ok(crate::core::config::context_data_dir()?.join("memory_os_session_onboarding.json"))
 }
 
 fn render_inspect_text(report: &MemoryOsInspectReport) -> String {
