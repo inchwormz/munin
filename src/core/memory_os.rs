@@ -456,6 +456,8 @@ pub struct MemoryOsFrictionFix {
     pub summary: String,
     pub permanent_fix: String,
     pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_signal_at: Option<String>,
     pub score: i64,
 }
 

@@ -367,6 +367,8 @@ pub struct StrategicNudge {
     pub supports: Vec<String>,
     pub why_now: String,
     pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_signal_at: Option<String>,
     pub evidence_freshness: String,
     pub confidence: String,
     pub interrupt_level: String,
@@ -1853,6 +1855,7 @@ fn deferred_suppression_nudges(kernel: &StrategyKernel) -> Vec<StrategicNudge> {
             why_now: "The active strategy explicitly marks this work as deferred / not now."
                 .to_string(),
             evidence: vec!["Deferred item in strategy kernel".to_string()],
+            last_signal_at: None,
             evidence_freshness: "n/a".to_string(),
             confidence: "high".to_string(),
             interrupt_level: "none".to_string(),
@@ -1871,6 +1874,7 @@ fn deferred_suppression_nudges(kernel: &StrategyKernel) -> Vec<StrategicNudge> {
             why_now: "The imported strategy includes an explicit constraint that suppresses this line of work."
                 .to_string(),
             evidence: vec!["Constraint from strategy kernel".to_string()],
+            last_signal_at: None,
             evidence_freshness: "n/a".to_string(),
             confidence: "high".to_string(),
             interrupt_level: "none".to_string(),
@@ -1900,6 +1904,7 @@ fn nudge_for_status_item(item: &StrategyStatusItem) -> Option<StrategicNudge> {
             why_now: "This strategy item lacks reliable evidence, so the first move should be to create a trustworthy signal."
                 .to_string(),
             evidence: item.evidence.clone(),
+            last_signal_at: None,
             evidence_freshness: item.evidence_freshness.clone(),
             confidence: "low".to_string(),
             interrupt_level: "defer".to_string(),
@@ -1916,6 +1921,7 @@ fn nudge_for_status_item(item: &StrategyStatusItem) -> Option<StrategicNudge> {
             why_now: "This initiative is blocked on a known dependency, so the dependency needs attention before downstream work."
                 .to_string(),
             evidence: item.evidence.clone(),
+            last_signal_at: None,
             evidence_freshness: item.evidence_freshness.clone(),
             confidence: if item.evidence_freshness == "fresh" {
                 "high".to_string()
@@ -1941,6 +1947,7 @@ fn nudge_for_status_item(item: &StrategyStatusItem) -> Option<StrategicNudge> {
                 "This strategic item is below its expected threshold and needs corrective work."
                     .to_string(),
             evidence: item.evidence.clone(),
+            last_signal_at: None,
             evidence_freshness: item.evidence_freshness.clone(),
             confidence: if item.evidence_freshness == "fresh" {
                 "high".to_string()
@@ -1965,6 +1972,7 @@ fn nudge_for_status_item(item: &StrategyStatusItem) -> Option<StrategicNudge> {
                 "This item is drifting toward risk and is worth attention before it turns red."
                     .to_string(),
             evidence: item.evidence.clone(),
+            last_signal_at: None,
             evidence_freshness: item.evidence_freshness.clone(),
             confidence: "medium".to_string(),
             interrupt_level: "defer".to_string(),

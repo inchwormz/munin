@@ -295,7 +295,7 @@ pub(super) fn apply_completed_friction_statuses(
         if completed_friction_fix_matches(
             Some(fix.fix_id.as_str()),
             "friction-fix",
-            &fix.evidence,
+            fix.last_signal_at.as_deref(),
             completed,
         ) {
             fix.status = "fixed".to_string();
@@ -311,12 +311,7 @@ pub(super) fn filter_completed_behavior_changes(
         .into_iter()
         .filter(|change| {
             let item_id = format!("friction:behavior:{}", change.target_agent);
-            !completed_friction_fix_matches(
-                Some(item_id.as_str()),
-                "friction-fix",
-                &change.evidence,
-                completed,
-            )
+            !completed_friction_fix_matches(Some(item_id.as_str()), "friction-fix", None, completed)
         })
         .collect()
 }
@@ -324,17 +319,30 @@ pub(super) fn filter_completed_behavior_changes(
 fn completed_friction_fix_matches(
     item_id: Option<&str>,
     item_kind: &str,
-    evidence: &[String],
+    last_signal_at: Option<&str>,
     completed: &[crate::core::tracking::ApprovalJobRecord],
 ) -> bool {
-    let Ok(current_evidence_json) = serde_json::to_string(evidence) else {
-        return false;
-    };
     completed.iter().any(|record| {
         record.item_kind == item_kind
             && record.item_id.as_deref() == item_id
-            && record.evidence_json == current_evidence_json
+            && !friction_signal_is_newer_than_completion(last_signal_at, record)
     })
+}
+
+fn friction_signal_is_newer_than_completion(
+    last_signal_at: Option<&str>,
+    record: &crate::core::tracking::ApprovalJobRecord,
+) -> bool {
+    let Some(last_signal_at) = last_signal_at else {
+        return false;
+    };
+    let signal_at = parse_rfc3339_to_utc(last_signal_at);
+    let completed_at = record
+        .last_reviewed_at
+        .as_deref()
+        .map(parse_rfc3339_to_utc)
+        .unwrap_or(record.updated_at);
+    signal_at > completed_at
 }
 
 #[derive(Debug, Default, Clone)]
@@ -344,6 +352,7 @@ pub(super) struct UserProseSignalCounts {
     pub(super) stale_output: usize,
     pub(super) latest_command_noise_at: Option<DateTime<Utc>>,
     pub(super) latest_autonomy_at: Option<DateTime<Utc>>,
+    pub(super) latest_stale_output_at: Option<DateTime<Utc>>,
     pub(super) command_noise_evidence: Vec<String>,
 }
 
@@ -389,6 +398,7 @@ pub(super) fn count_user_prose_signals(
     let mut stale_output_seen = HashSet::new();
     let mut latest_command_noise_at = None;
     let mut latest_autonomy_at = None;
+    let mut latest_stale_output_at = None;
 
     for checkpoint in checkpoints
         .iter()
@@ -413,14 +423,12 @@ pub(super) fn count_user_prose_signals(
                     format!("user correction at {}", checkpoint.capture.generated_at),
                 );
             }
-            if text_has_autonomy_signal(&lowered) {
+            if text_has_autonomy_signal(&lowered) && text_has_autonomy_correction(&lowered) {
                 autonomy_seen.insert(signal_key.clone());
-                if text_has_autonomy_correction(&lowered) {
-                    counts_latest_at(
-                        &mut latest_autonomy_at,
-                        checkpoint_original_signal_time(checkpoint),
-                    );
-                }
+                counts_latest_at(
+                    &mut latest_autonomy_at,
+                    checkpoint_original_signal_time(checkpoint),
+                );
             }
             if lowered.contains("still not returning")
                 || lowered.contains("not done until")
@@ -428,6 +436,10 @@ pub(super) fn count_user_prose_signals(
                 || lowered.contains("correct info")
             {
                 stale_output_seen.insert(signal_key.clone());
+                counts_latest_at(
+                    &mut latest_stale_output_at,
+                    checkpoint_original_signal_time(checkpoint),
+                );
             }
         }
     }
@@ -438,6 +450,7 @@ pub(super) fn count_user_prose_signals(
         stale_output: stale_output_seen.len(),
         latest_command_noise_at,
         latest_autonomy_at,
+        latest_stale_output_at,
         command_noise_evidence,
     }
 }
@@ -490,6 +503,7 @@ fn user_prose_friction_fixes(
                     "Keep strategy facts and user prose above shell/build output; reserve raw commands for inspect/json evidence."
                         .to_string(),
                 evidence,
+                last_signal_at: counts.latest_command_noise_at.map(|value| value.to_rfc3339()),
                 score: 120 + counts.command_noise.min(20) as i64,
             });
         }
@@ -508,6 +522,7 @@ fn user_prose_friction_fixes(
                 "Refresh session imports before serving friction/brief surfaces and rank active work above stale session fragments."
                     .to_string(),
             evidence: vec![format!("{} stale-output corrections", counts.stale_output)],
+            last_signal_at: counts.latest_stale_output_at.map(|value| value.to_rfc3339()),
             score: 115 + counts.stale_output.min(20) as i64,
         });
     }
@@ -547,6 +562,7 @@ fn user_prose_friction_fixes(
                 "When a task calls for polling, waiting, or iterating until something is solved, keep cycling without pausing to ask. Stop only when the task is verified solved or a concrete blocker is recorded."
                     .to_string(),
             evidence,
+            last_signal_at: counts.latest_autonomy_at.map(|value| value.to_rfc3339()),
             score: 100 + counts.autonomy.min(20) as i64,
         });
     }
@@ -559,6 +575,7 @@ pub(super) fn build_memory_os_new_unproven_friction(
 ) -> Vec<crate::core::memory_os::MemoryOsFrictionFix> {
     let mut wrong_terminal_evidence = Vec::new();
     let mut wrong_terminal_seen = HashSet::new();
+    let mut latest_wrong_terminal_at = None;
     let context_reversal_codified_at = durable_fixes
         .context_reversal_clarification
         .as_ref()
@@ -576,6 +593,7 @@ pub(super) fn build_memory_os_new_unproven_friction(
                 {
                     continue;
                 }
+                counts_latest_at(&mut latest_wrong_terminal_at, signal_at);
                 let key = compact_display_text(text, 180).to_ascii_lowercase();
                 if wrong_terminal_seen.insert(key) {
                     push_unique_string(
@@ -605,6 +623,7 @@ pub(super) fn build_memory_os_new_unproven_friction(
             "When a user message reverses the current task framing or sounds like it may belong to another terminal, ask one concise clarifying question before editing."
                 .to_string(),
         evidence: wrong_terminal_evidence.into_iter().take(3).collect(),
+        last_signal_at: latest_wrong_terminal_at.map(|value| value.to_rfc3339()),
         score: 90 + wrong_terminal_seen.len().min(10) as i64,
     }]
 }
@@ -1014,6 +1033,7 @@ fn command_friction_fixes(
             ),
             permanent_fix: permanent_fix.to_string(),
             evidence: vec![format!("{} examples retained in JSON evidence", count)],
+            last_signal_at: None,
             score: 50 + count as i64 + successful as i64 - failed as i64,
         });
     }
@@ -1056,6 +1076,7 @@ fn behavior_change_friction_fixes(
                     redirects.redirects_with_success_after_resume
                 ),
             ],
+            last_signal_at: None,
             score: 70 + redirects.redirects as i64,
         });
     }
@@ -1089,6 +1110,7 @@ fn behavior_change_friction_fixes(
             summary: change.rationale.clone(),
             permanent_fix: change.change.clone(),
             evidence,
+            last_signal_at: latest_autonomy_at.map(|value| value.to_rfc3339()),
             score: 60,
         });
     }
@@ -1459,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_friction_statuses_fix_unchanged_evidence_only() {
+    fn completed_friction_statuses_follow_stable_identity_until_new_signal() {
         let completed_evidence = vec!["99 autonomy/polling corrections".to_string()];
         let completed = vec![completed_friction_record(
             "friction:autonomy-polling",
@@ -1473,20 +1495,25 @@ mod tests {
                 status: "active".to_string(),
                 summary: "old signal".to_string(),
                 permanent_fix: "poll".to_string(),
-                evidence: completed_evidence,
+                evidence: vec![
+                    "100 autonomy/polling corrections".to_string(),
+                    "changed evidence text without a new signal".to_string(),
+                ],
+                last_signal_at: Some("2026-05-01T00:00:00Z".to_string()),
                 score: 120,
             },
             crate::core::memory_os::MemoryOsFrictionFix {
-                fix_id: "friction:behavior:claude".to_string(),
-                title: "Behavior change for claude".to_string(),
+                fix_id: "friction:autonomy-polling".to_string(),
+                title: "Keep autonomous work moving without manual polling".to_string(),
                 impact: "medium".to_string(),
                 status: "active".to_string(),
                 summary: "new signal".to_string(),
                 permanent_fix: "poll".to_string(),
                 evidence: vec![
-                    "99 autonomy/polling corrections".to_string(),
-                    "newer correction after completion".to_string(),
+                    "100 autonomy/polling corrections".to_string(),
+                    "newer correction after completion timestamp".to_string(),
                 ],
+                last_signal_at: Some("2026-05-03T00:00:00Z".to_string()),
                 score: 60,
             },
         ];
@@ -1498,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_behavior_changes_are_filtered_by_exact_evidence() {
+    fn completed_behavior_changes_are_filtered_by_stable_identity() {
         let completed_evidence = vec![
             "99 autonomy/polling corrections".to_string(),
             "Shared contract with codex so both lanes behave the same under polling instructions"
@@ -1514,7 +1541,10 @@ mod tests {
                 change: "When the user asks for polling or long-running work, keep iterating."
                     .to_string(),
                 rationale: "old signal".to_string(),
-                evidence: completed_evidence,
+                evidence: vec![
+                    "100 autonomy/polling corrections".to_string(),
+                    "changed evidence should not re-open the same behavior fix".to_string(),
+                ],
             },
             crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
                 target_agent: "codex".to_string(),
@@ -1855,6 +1885,20 @@ mod tests {
         ));
         assert!(text_has_autonomy_signal(direct_correction));
         assert!(text_has_autonomy_correction(direct_correction));
+    }
+
+    #[test]
+    fn autonomy_launcher_instruction_does_not_count_as_friction_correction() {
+        let checkpoints = vec![onboarding_checkpoint(
+            "2026-04-01T00:00:00Z",
+            "2026-04-01T00:00:10Z",
+            "You are processing a SiteSorted clone-speed job. This is FULLY AUTONOMOUS: never ask questions, never pause for input.",
+        )];
+
+        let counts = count_user_prose_signals(&checkpoints);
+
+        assert_eq!(counts.autonomy, 0);
+        assert!(counts.latest_autonomy_at.is_none());
     }
 
     #[test]

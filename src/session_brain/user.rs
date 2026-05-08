@@ -276,6 +276,7 @@ mod tests {
                 "When a user message reverses the current task framing or sounds like it may belong to another terminal, ask one concise clarifying question before editing."
                     .to_string(),
             evidence: vec!["user correction at 2026-04-21T18:03:06Z".to_string()],
+            last_signal_at: Some("2026-04-21T18:03:06Z".to_string()),
             score: 91,
         });
 

@@ -1189,14 +1189,32 @@ fn completed_friction_fix_still_watching(
     nudge: &StrategicNudge,
     completed: &[crate::core::tracking::ApprovalJobRecord],
 ) -> bool {
-    let Ok(current_evidence_json) = serde_json::to_string(&nudge.evidence) else {
-        return false;
-    };
     completed.iter().any(|record| {
         record.item_kind == nudge.item_kind
             && record.item_id == nudge.item_id
-            && record.evidence_json == current_evidence_json
+            && !friction_signal_is_newer_than_completion(nudge.last_signal_at.as_deref(), record)
     })
+}
+
+fn friction_signal_is_newer_than_completion(
+    last_signal_at: Option<&str>,
+    record: &crate::core::tracking::ApprovalJobRecord,
+) -> bool {
+    let Some(last_signal_at) = last_signal_at else {
+        return false;
+    };
+    let Ok(signal_at) =
+        DateTime::parse_from_rfc3339(last_signal_at).map(|value| value.with_timezone(&Utc))
+    else {
+        return false;
+    };
+    let completed_at = record
+        .last_reviewed_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or(record.updated_at);
+    signal_at > completed_at
 }
 
 fn with_suppression_reason(mut nudge: StrategicNudge, reason: &str) -> StrategicNudge {
@@ -1233,6 +1251,7 @@ fn friction_fix_to_nudge(fix: &MemoryOsFrictionFix) -> StrategicNudge {
         supports: Vec::new(),
         why_now: fix.summary.clone(),
         evidence: fix.evidence.clone(),
+        last_signal_at: fix.last_signal_at.clone(),
         evidence_freshness: if fix.status == "active" {
             "fresh".to_string()
         } else {
@@ -3059,6 +3078,7 @@ mod tests {
             supports: Vec::new(),
             why_now: "Current value is below target.".to_string(),
             evidence: vec!["Current value: 0".to_string()],
+            last_signal_at: None,
             evidence_freshness: "fresh".to_string(),
             confidence: "high".to_string(),
             interrupt_level: "interrupt".to_string(),
@@ -3098,6 +3118,7 @@ mod tests {
             summary: "User corrected noisy Memory OS output repeatedly.".to_string(),
             permanent_fix: "Keep strategy and user prose above shell output.".to_string(),
             evidence: vec!["user correction at 2026-04-17T00:00:00Z".to_string()],
+            last_signal_at: Some("2026-04-17T00:00:00Z".to_string()),
             score: 120,
         };
 
@@ -3131,7 +3152,7 @@ mod tests {
         }
     }
 
-    fn sample_friction_nudge(evidence: Vec<String>) -> StrategicNudge {
+    fn sample_friction_nudge(evidence: Vec<String>, last_signal_at: &str) -> StrategicNudge {
         StrategicNudge {
             task: "Fix friction: Keep autonomous work moving without manual polling".to_string(),
             item_id: Some("friction:autonomy-polling".to_string()),
@@ -3139,6 +3160,7 @@ mod tests {
             supports: Vec::new(),
             why_now: "User has asked for stronger autonomous polling behavior.".to_string(),
             evidence,
+            last_signal_at: Some(last_signal_at.to_string()),
             evidence_freshness: "fresh".to_string(),
             confidence: "high".to_string(),
             interrupt_level: "interrupt".to_string(),
@@ -3197,7 +3219,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_friction_fix_is_suppressed_while_evidence_is_unchanged() {
+    fn completed_friction_fix_is_suppressed_when_evidence_changes_without_new_signal() {
         let temp = tempfile::tempdir().expect("tempdir");
         let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
         let project_path = temp.path().join("project");
@@ -3205,7 +3227,14 @@ mod tests {
         let evidence = vec!["99 autonomy/polling corrections".to_string()];
         seed_completed_friction_fix(&tracker, &project_path.display().to_string(), &evidence);
 
-        let mut report = sample_recommend_report_with_nudge(sample_friction_nudge(evidence));
+        let changed_evidence = vec![
+            "100 autonomy/polling corrections".to_string(),
+            "changed evidence text without a new signal".to_string(),
+        ];
+        let mut report = sample_recommend_report_with_nudge(sample_friction_nudge(
+            changed_evidence,
+            "2026-05-01T00:00:00Z",
+        ));
         suppress_completed_friction_nudges(&tracker, &runtime, &mut report).expect("suppression");
 
         assert!(report.nudges.is_empty());
@@ -3218,7 +3247,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_friction_fix_requeues_when_evidence_changes() {
+    fn completed_friction_fix_requeues_when_signal_is_newer_than_completion() {
         let temp = tempfile::tempdir().expect("tempdir");
         let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
         let project_path = temp.path().join("project");
@@ -3233,8 +3262,11 @@ mod tests {
             "100 autonomy/polling corrections".to_string(),
             "newer autonomy correction exists after codification".to_string(),
         ];
-        let mut report =
-            sample_recommend_report_with_nudge(sample_friction_nudge(changed_evidence));
+        let newer_signal_at = (Utc::now() + Duration::days(1)).to_rfc3339();
+        let mut report = sample_recommend_report_with_nudge(sample_friction_nudge(
+            changed_evidence,
+            &newer_signal_at,
+        ));
         suppress_completed_friction_nudges(&tracker, &runtime, &mut report).expect("suppression");
 
         assert_eq!(report.nudges.len(), 1);
@@ -3264,6 +3296,7 @@ mod tests {
                     supports: Vec::new(),
                     why_now: "Missing instrumentation.".to_string(),
                     evidence: vec!["No metric".to_string()],
+                    last_signal_at: None,
                     evidence_freshness: "unknown".to_string(),
                     confidence: "medium".to_string(),
                     interrupt_level: "suggest".to_string(),
@@ -3278,6 +3311,7 @@ mod tests {
                     supports: Vec::new(),
                     why_now: "User has asked for stronger autonomous polling behavior.".to_string(),
                     evidence: vec!["154 autonomy/polling corrections".to_string()],
+                    last_signal_at: Some("2026-05-01T00:00:00Z".to_string()),
                     evidence_freshness: "fresh".to_string(),
                     confidence: "high".to_string(),
                     interrupt_level: "interrupt".to_string(),

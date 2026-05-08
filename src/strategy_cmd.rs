@@ -223,6 +223,7 @@ mod tests {
                 supports: Vec::new(),
                 why_now: "Repeated corrections show this is still active.".to_string(),
                 evidence: vec!["154 autonomy/polling corrections".to_string()],
+                last_signal_at: None,
                 evidence_freshness: "fresh".to_string(),
                 confidence: "high".to_string(),
                 interrupt_level: "interrupt".to_string(),
