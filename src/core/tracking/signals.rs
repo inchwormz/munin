@@ -50,12 +50,6 @@ fn classify_misunderstanding_label(error_kind: &str, wrong_command: &str) -> Str
     }
 }
 
-fn format_optional_metric(value: Option<f64>) -> String {
-    value
-        .map(|metric| format!("{metric:.1}"))
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
 pub(super) fn first_non_empty(values: &[Option<String>]) -> Option<String> {
     values
         .iter()
@@ -70,14 +64,82 @@ pub(super) fn meaningful_checkpoint_summary(text: &str) -> Option<String> {
         return None;
     }
     let lowered = compact.to_ascii_lowercase();
+    if checkpoint_summary_is_command_or_build_noise(&lowered) {
+        return None;
+    }
+    Some(compact)
+}
+
+fn checkpoint_summary_is_command_or_build_noise(lowered: &str) -> bool {
     if lowered.starts_with("exit code:")
         || lowered.starts_with("exit ")
         || lowered.contains("blocked by policy")
         || lowered.starts_with("error: process didn't exit")
     {
-        return None;
+        return true;
     }
-    Some(compact)
+
+    let command_prefixes = [
+        "cd ",
+        "git ",
+        "context ",
+        "context proxy ",
+        "powershell",
+        "pwsh",
+        "cmd ",
+        "node ",
+        "cargo ",
+        "npm ",
+        "npx ",
+        "python ",
+        "python3 ",
+        ".\\",
+        "./",
+    ];
+    if command_prefixes
+        .iter()
+        .any(|prefix| lowered.starts_with(prefix))
+    {
+        return true;
+    }
+
+    let command_markers = [
+        "&&",
+        "||",
+        "get-childitem",
+        "select-string",
+        ".ps1",
+        ".exe",
+        ".cmd",
+        ".omx",
+        ".omx2",
+        ".codex-state",
+        "inbox.md",
+        "worker-",
+        "launch-detached",
+        " | branch ",
+        "staged ",
+        "modified ",
+        "shell executions",
+        "shells/session",
+        "build output",
+        "cargo build:",
+        "cargo test:",
+        "npm run build",
+        "next build",
+        "compiled successfully",
+        "[omx_tmux_inject]",
+        "execute your assignment",
+        "report concrete status",
+        "report status + evidence",
+        "status.json",
+        "<task>",
+        "<run_id>",
+        "<deliverable>",
+    ];
+    command_markers
+        .iter()
+        .any(|needle| lowered.contains(needle))
 }
 
 pub(super) fn memory_os_serving_policy_lines() -> Vec<String> {
@@ -280,6 +342,7 @@ pub(super) struct UserProseSignalCounts {
     pub(super) command_noise: usize,
     pub(super) autonomy: usize,
     pub(super) stale_output: usize,
+    pub(super) latest_command_noise_at: Option<DateTime<Utc>>,
     pub(super) latest_autonomy_at: Option<DateTime<Utc>>,
     pub(super) command_noise_evidence: Vec<String>,
 }
@@ -294,6 +357,7 @@ pub(super) struct DurableFrictionFixEvidence {
 pub(super) struct UserProseDurableFixes {
     pub(super) autonomy_polling: Option<DurableFrictionFixEvidence>,
     pub(super) codex_autonomy_polling: Option<DurableFrictionFixEvidence>,
+    pub(super) command_noise_surface_policy: Option<DurableFrictionFixEvidence>,
     pub(super) context_reversal_clarification: Option<DurableFrictionFixEvidence>,
 }
 
@@ -309,6 +373,9 @@ pub(super) fn detect_user_prose_durable_fixes(project_path: Option<&str>) -> Use
     UserProseDurableFixes {
         autonomy_polling,
         codex_autonomy_polling,
+        command_noise_surface_policy: Some(current_binary_durable_fix_evidence(
+            "Memory OS text surfaces suppress command/build noise",
+        )),
         context_reversal_clarification,
     }
 }
@@ -320,6 +387,7 @@ pub(super) fn count_user_prose_signals(
     let mut command_noise_seen = HashSet::new();
     let mut autonomy_seen = HashSet::new();
     let mut stale_output_seen = HashSet::new();
+    let mut latest_command_noise_at = None;
     let mut latest_autonomy_at = None;
 
     for checkpoint in checkpoints
@@ -336,6 +404,10 @@ pub(super) fn count_user_prose_signals(
                 || lowered.contains("what the hell")
             {
                 command_noise_seen.insert(signal_key.clone());
+                counts_latest_at(
+                    &mut latest_command_noise_at,
+                    checkpoint_original_signal_time(checkpoint),
+                );
                 push_unique_string(
                     &mut command_noise_evidence,
                     format!("user correction at {}", checkpoint.capture.generated_at),
@@ -364,6 +436,7 @@ pub(super) fn count_user_prose_signals(
         command_noise: command_noise_seen.len(),
         autonomy: autonomy_seen.len(),
         stale_output: stale_output_seen.len(),
+        latest_command_noise_at,
         latest_autonomy_at,
         command_noise_evidence,
     }
@@ -378,21 +451,48 @@ fn user_prose_friction_fixes(
 
     let mut fixes = Vec::new();
     if counts.command_noise > 0 {
-        fixes.push(crate::core::memory_os::MemoryOsFrictionFix {
-            fix_id: "friction:user-command-noise".to_string(),
-            title: "Stop surfacing command/build noise as memory".to_string(),
-            impact: "high".to_string(),
-            status: "active".to_string(),
-            summary: format!(
-                "User has directly corrected noisy or useless Memory OS output {} times.",
-                counts.command_noise
-            ),
-            permanent_fix:
-                "Keep strategy facts and user prose above shell/build output; reserve raw commands for inspect/json evidence."
-                    .to_string(),
-            evidence: counts.command_noise_evidence.into_iter().take(3).collect(),
-            score: 120 + counts.command_noise.min(20) as i64,
-        });
+        let command_noise_status = command_noise_friction_status(
+            counts.latest_command_noise_at,
+            durable_fixes.command_noise_surface_policy.as_ref(),
+            now,
+        );
+        if command_noise_status != "retired" {
+            let mut evidence = counts
+                .command_noise_evidence
+                .into_iter()
+                .take(3)
+                .collect::<Vec<_>>();
+            if let Some(durable) = &durable_fixes.command_noise_surface_policy {
+                evidence.push(format!(
+                    "durable surface policy active in {} at {}",
+                    durable.path,
+                    durable.codified_at.to_rfc3339()
+                ));
+                if counts
+                    .latest_command_noise_at
+                    .is_some_and(|latest| latest > durable.codified_at)
+                {
+                    evidence.push(
+                        "newer command-noise correction exists after codification".to_string(),
+                    );
+                }
+            }
+            fixes.push(crate::core::memory_os::MemoryOsFrictionFix {
+                fix_id: "friction:user-command-noise".to_string(),
+                title: "Stop surfacing command/build noise as memory".to_string(),
+                impact: "high".to_string(),
+                status: command_noise_status,
+                summary: format!(
+                    "User has directly corrected noisy or useless Memory OS output {} times.",
+                    counts.command_noise
+                ),
+                permanent_fix:
+                    "Keep strategy facts and user prose above shell/build output; reserve raw commands for inspect/json evidence."
+                        .to_string(),
+                evidence,
+                score: 120 + counts.command_noise.min(20) as i64,
+            });
+        }
     }
     if counts.stale_output > 0 {
         fixes.push(crate::core::memory_os::MemoryOsFrictionFix {
@@ -599,6 +699,22 @@ pub(super) fn autonomy_polling_friction_status(
     durable_fix: Option<&DurableFrictionFixEvidence>,
     now: DateTime<Utc>,
 ) -> String {
+    durable_friction_status(latest_correction_at, durable_fix, now)
+}
+
+pub(super) fn command_noise_friction_status(
+    latest_correction_at: Option<DateTime<Utc>>,
+    durable_fix: Option<&DurableFrictionFixEvidence>,
+    now: DateTime<Utc>,
+) -> String {
+    durable_friction_status(latest_correction_at, durable_fix, now)
+}
+
+fn durable_friction_status(
+    latest_correction_at: Option<DateTime<Utc>>,
+    durable_fix: Option<&DurableFrictionFixEvidence>,
+    now: DateTime<Utc>,
+) -> String {
     let Some(durable_fix) = durable_fix else {
         return "active".to_string();
     };
@@ -614,6 +730,24 @@ pub(super) fn autonomy_polling_friction_status(
         "fixed".to_string()
     } else {
         "codified".to_string()
+    }
+}
+
+fn current_binary_durable_fix_evidence(policy: &str) -> DurableFrictionFixEvidence {
+    let path = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "compiled munin binary".to_string());
+    let codified_at = std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok())
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(Utc::now);
+
+    DurableFrictionFixEvidence {
+        path: format!("{path} ({policy})"),
+        codified_at,
     }
 }
 
@@ -1069,18 +1203,18 @@ pub(super) fn build_memory_os_behavior_changes(
         },
     );
 
-    if let Some(codex) = by_source.iter().find(|source| source.source == "codex") {
+    if let Some(codex) = by_source
+        .iter()
+        .find(|source| source.source == "codex" && source.corrections > 0)
+    {
         recommendations.push(
             crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
                 target_agent: "codex".to_string(),
                 change: "Keep moving after grounding, but front-load the scoped Memory OS profile so command corrections and active-work cues are visible before acting.".to_string(),
-                rationale: "The Codex lane is highly execution-heavy, so front-load the Memory OS profile so command corrections and active-work cues are visible before acting.".to_string(),
+                rationale: "The Codex lane has correction memory, so front-load the Memory OS profile before acting.".to_string(),
                 evidence: vec![
-                    format!("{:.1} shells/session", codex.shells_per_session),
-                    format!(
-                        "{} corrections per 100 shells",
-                        format_optional_metric(Some(codex.corrections_per_100_shells))
-                    ),
+                    format!("{} codex correction memories", codex.corrections),
+                    format!("{} imported codex sessions", codex.sessions),
                 ],
             },
         );
@@ -1093,8 +1227,7 @@ pub(super) fn build_memory_os_behavior_changes(
                 change: "Use the same Memory OS-first read path, then open recall only when a specific historical example is needed for provenance.".to_string(),
                 rationale: "Claude already carries most of the imported historical footprint, so it benefits from a compact projection-first answer path instead of broad archive scans.".to_string(),
                 evidence: vec![
-                    format!("{} sessions", claude.sessions),
-                    format!("{} shell executions", claude.shell_executions),
+                    format!("{} imported claude sessions", claude.sessions),
                 ],
             },
         );
@@ -1244,6 +1377,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn behavior_changes_keep_shell_metrics_out_of_human_evidence() {
+        let by_source = vec![
+            crate::core::memory_os::MemoryOsSourceBehaviorSummary {
+                source: "codex".to_string(),
+                sessions: 10,
+                shell_executions: 120,
+                corrections: 2,
+                redirects: 0,
+                redirected_sessions: 0,
+                successful_redirects: 0,
+                shells_per_session: 12.0,
+                corrections_per_100_shells: 1.7,
+                redirects_per_session: 0.0,
+                avg_commands_to_success_after_redirect: None,
+                avg_seconds_to_success_after_redirect: None,
+            },
+            crate::core::memory_os::MemoryOsSourceBehaviorSummary {
+                source: "claude".to_string(),
+                sessions: 8,
+                shell_executions: 240,
+                corrections: 0,
+                redirects: 0,
+                redirected_sessions: 0,
+                successful_redirects: 0,
+                shells_per_session: 30.0,
+                corrections_per_100_shells: 0.0,
+                redirects_per_session: 0.0,
+                avg_commands_to_success_after_redirect: None,
+                avg_seconds_to_success_after_redirect: None,
+            },
+        ];
+        let redirects = crate::core::memory_os::MemoryOsRedirectSummary::default();
+
+        let changes = build_memory_os_behavior_changes(&by_source, &redirects, 0, None, None);
+        let rendered = changes
+            .iter()
+            .flat_map(|change| change.evidence.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("shell"));
+        assert!(rendered.contains("2 codex correction memories"));
+        assert!(rendered.contains("8 imported claude sessions"));
+    }
+
     fn completed_friction_record(
         item_id: &str,
         evidence: &[String],
@@ -1361,6 +1541,7 @@ mod tests {
                 path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
                 codified_at,
             }),
+            command_noise_surface_policy: None,
             context_reversal_clarification: None,
         };
         let behavior_changes = vec![
@@ -1449,6 +1630,52 @@ mod tests {
     }
 
     #[test]
+    fn command_noise_status_tracks_durable_fix_lifecycle() {
+        let codified_at = DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let durable = DurableFrictionFixEvidence {
+            path: "munin binary".to_string(),
+            codified_at,
+        };
+
+        assert_eq!(
+            command_noise_friction_status(
+                Some(codified_at - Duration::days(1)),
+                Some(&durable),
+                codified_at + Duration::days(14),
+            ),
+            "codified"
+        );
+        assert_eq!(
+            command_noise_friction_status(
+                Some(codified_at + Duration::seconds(1)),
+                Some(&durable),
+                codified_at + Duration::days(14),
+            ),
+            "active"
+        );
+    }
+
+    #[test]
+    fn checkpoint_summary_filters_command_and_build_noise() {
+        assert!(meaningful_checkpoint_summary("cargo build: 0 errors, 18 warnings").is_none());
+        assert!(meaningful_checkpoint_summary(
+            "C:\\Users\\OEM\\Projects\\context | branch main | staged 0 | modified 0"
+        )
+        .is_none());
+        assert_eq!(
+            meaningful_checkpoint_summary(
+                "Fix the Memory OS brief active-work section before trusting the surface."
+            ),
+            Some(
+                "Fix the Memory OS brief active-work section before trusting the surface."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
     fn agents_file_codification_requires_autonomy_and_completion_contract() {
         assert!(agents_file_codifies_autonomy_polling(
             "AUTONOMY DIRECTIVE\nYOU ARE AN AUTONOMOUS CODING AGENT.\nEXECUTE TASKS TO COMPLETION WITHOUT ASKING FOR PERMISSION.\nDO NOT STOP TO ASK \"SHOULD I PROCEED?\""
@@ -1502,6 +1729,7 @@ mod tests {
         let durable_fixes = UserProseDurableFixes {
             autonomy_polling: None,
             codex_autonomy_polling: None,
+            command_noise_surface_policy: None,
             context_reversal_clarification: Some(DurableFrictionFixEvidence {
                 path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
                 codified_at: correction_at + Duration::days(1),
@@ -1526,6 +1754,7 @@ mod tests {
         let durable_fixes = UserProseDurableFixes {
             autonomy_polling: None,
             codex_autonomy_polling: None,
+            command_noise_surface_policy: None,
             context_reversal_clarification: Some(DurableFrictionFixEvidence {
                 path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
                 codified_at: DateTime::parse_from_rfc3339("2026-04-20T00:00:00Z")
@@ -1550,6 +1779,7 @@ mod tests {
         let durable_fixes = UserProseDurableFixes {
             autonomy_polling: None,
             codex_autonomy_polling: None,
+            command_noise_surface_policy: None,
             context_reversal_clarification: Some(DurableFrictionFixEvidence {
                 path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
                 codified_at: DateTime::parse_from_rfc3339("2026-04-20T00:00:00Z")

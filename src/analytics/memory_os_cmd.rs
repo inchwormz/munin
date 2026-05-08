@@ -644,8 +644,8 @@ fn render_fast_startup_brief(
     ));
     lines.push("<what_i_know>".to_string());
     lines.push(format!(
-        "- Memory OS has indexed {} sessions and {} shell executions.",
-        onboarding.sessions_processed, onboarding.shells_ingested
+        "- Memory OS has indexed {} sessions.",
+        onboarding.sessions_processed
     ));
     lines.push(format!(
         "- Backfill status: {} (schema {}).",
@@ -855,12 +855,7 @@ fn project_focus_findings(overview: &MemoryOsOverviewReport) -> Vec<MemoryOsNarr
                 .iter()
                 .filter(|project| project_names.contains(&project.repo_label))
                 .take(3)
-                .map(|project| {
-                    format!(
-                        "{}: {} sessions, {} shells",
-                        project.repo_label, project.sessions, project.shell_executions
-                    )
-                })
+                .map(|project| format!("{}: {} sessions", project.repo_label, project.sessions))
                 .collect(),
         });
     }
@@ -3075,7 +3070,14 @@ fn brief_text_has_command_noise(text: &str) -> bool {
         "pwsh",
         "context proxy",
         "shell executions",
+        "shells/session",
         "sessions, ",
+        "build output",
+        "cargo build:",
+        "cargo test:",
+        "npm run build",
+        "next build",
+        "compiled successfully",
         "[omx_tmux_inject]",
         "execute your assignment",
         "report concrete status",
@@ -3095,10 +3097,6 @@ fn render_overview_text(report: &MemoryOsOverviewReport) {
     println!("------------------");
     println!("Scope: {}", report.scope);
     println!("Imported sessions: {}", report.imported_sessions);
-    println!(
-        "Imported shell executions: {}",
-        report.imported_shell_executions
-    );
     println!();
     println!("Imported Sources");
     println!("----------------");
@@ -3111,11 +3109,8 @@ fn render_overview_text(report: &MemoryOsOverviewReport) {
     } else {
         for project in &report.top_projects {
             println!(
-                "- {} | sessions {} | shells {} | {}",
-                project.repo_label,
-                project.sessions,
-                project.shell_executions,
-                project.project_path
+                "- {} | sessions {} | {}",
+                project.repo_label, project.sessions, project.project_path
             );
         }
     }
@@ -3185,10 +3180,8 @@ fn render_overview_text(report: &MemoryOsOverviewReport) {
         report.onboarding.journal_event_count
     );
     println!(
-        "Imported: {} sessions | {} shells | {} corrections",
-        report.onboarding.sessions_processed,
-        report.onboarding.shells_ingested,
-        report.onboarding.corrections_ingested
+        "Imported: {} sessions | {} corrections",
+        report.onboarding.sessions_processed, report.onboarding.corrections_ingested
     );
     if let Some(completed_at) = &report.onboarding.completed_at {
         println!("Completed at: {}", completed_at);
@@ -3377,13 +3370,6 @@ fn render_friction_text(report: &MemoryOsFrictionReport) {
     println!(
         "Shifts with later success: {}",
         report.redirects.redirects_with_success_after_resume
-    );
-    println!(
-        "Avg commands to success: {}",
-        format_optional_metric(
-            report.redirects.avg_commands_to_success_after_redirect,
-            "cmds"
-        )
     );
     println!(
         "Avg seconds to success: {}",
@@ -3664,10 +3650,7 @@ fn render_sources(sources: &[crate::core::memory_os::MemoryOsImportedSourceSumma
         return;
     }
     for source in sources {
-        println!(
-            "- {} | sessions {} | shells {}",
-            source.source, source.sessions, source.shell_executions
-        );
+        println!("- {} | sessions {}", source.source, source.sessions);
     }
 }
 
@@ -3677,18 +3660,11 @@ fn render_correction_patterns(patterns: &[MemoryOsCorrectionPatternSummary]) {
         return;
     }
     for pattern in patterns {
-        let wrong_preview = display_text(&pattern.wrong_command, 80);
-        let corrected_preview = display_text(&pattern.corrected_command, 80);
         println!(
             "- [{}] x{} ({} succeeded, {} failed)",
             pattern.error_kind, pattern.count, pattern.successful_replays, pattern.failed_replays
         );
-        if !wrong_preview.trim().is_empty() {
-            println!("    was: {}", wrong_preview);
-        }
-        if !corrected_preview.trim().is_empty() {
-            println!("    now: {}", corrected_preview);
-        }
+        println!("  raw command pairs: available in --format json or inspect");
     }
 }
 
@@ -3706,16 +3682,6 @@ fn render_correction_patterns_to_codify(patterns: &[MemoryOsCorrectionPatternSum
         return;
     }
     for (index, pattern) in filtered.iter().enumerate() {
-        let wrong = pattern
-            .wrong_command
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let corrected = pattern
-            .corrected_command
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
         let status = if pattern.successful_replays > pattern.failed_replays
             && pattern.successful_replays >= pattern.count
         {
@@ -3732,51 +3698,9 @@ fn render_correction_patterns_to_codify(patterns: &[MemoryOsCorrectionPatternSum
             pattern.successful_replays,
             pattern.failed_replays
         );
-        let (wrong_display, corrected_display) = command_diff_display(&wrong, &corrected, 160);
-        println!("    wrong:     {}", wrong_display);
-        println!("    corrected: {}", corrected_display);
+        println!("    raw command pairs: available in --format json or inspect");
         println!("    candidate rule: prefer the corrected form; codify once the pattern recurs across 3+ sessions.");
     }
-}
-
-fn command_diff_display(wrong: &str, corrected: &str, max_tail: usize) -> (String, String) {
-    let common = common_prefix_len(wrong, corrected);
-    let shared_threshold = 40usize;
-    if common >= shared_threshold && common < wrong.len().min(corrected.len()) {
-        let shared_preview: String = wrong.chars().take(24).collect();
-        let wrong_tail = tail_from(wrong, common, max_tail);
-        let corrected_tail = tail_from(corrected, common, max_tail);
-        (
-            format!(
-                "[shared {}ch: `{}...`] ...{}",
-                common, shared_preview, wrong_tail
-            ),
-            format!(
-                "[shared {}ch: `{}...`] ...{}",
-                common, shared_preview, corrected_tail
-            ),
-        )
-    } else {
-        (
-            display_text(wrong, max_tail),
-            display_text(corrected, max_tail),
-        )
-    }
-}
-
-fn common_prefix_len(a: &str, b: &str) -> usize {
-    a.chars()
-        .zip(b.chars())
-        .take_while(|(ca, cb)| ca == cb)
-        .map(|(ca, _)| ca.len_utf8())
-        .sum()
-}
-
-fn tail_from(text: &str, start_byte: usize, max_len: usize) -> String {
-    let start = start_byte.min(text.len());
-    let tail = text.get(start..).unwrap_or("");
-    let trimmed = tail.trim_start();
-    display_text(trimmed, max_len)
 }
 
 fn action_memory_cue_is_noise(summary: &str) -> bool {
@@ -3817,13 +3741,8 @@ fn render_behavior_summaries(summaries: &[MemoryOsSourceBehaviorSummary]) {
     }
     for summary in summaries {
         println!(
-            "- {} | sessions {} | shells {} | corrections {} | shells/session {:.1} | corrections/100 shells {:.1}",
-            summary.source,
-            summary.sessions,
-            summary.shell_executions,
-            summary.corrections,
-            summary.shells_per_session,
-            summary.corrections_per_100_shells
+            "- {} | sessions {} | corrections {}",
+            summary.source, summary.sessions, summary.corrections
         );
     }
 }
@@ -3837,7 +3756,9 @@ fn render_findings(findings: &[MemoryOsNarrativeFinding]) {
         println!("- {}", finding.title);
         println!("  {}", display_text(&finding.summary, 160));
         for evidence in finding.evidence.iter().take(4) {
-            println!("  evidence: {}", display_text(evidence, 160));
+            if !brief_text_has_command_noise(evidence) {
+                println!("  evidence: {}", display_text(evidence, 160));
+            }
         }
     }
 }
@@ -3996,7 +3917,8 @@ mod tests {
         let rendered = render_fast_startup_brief(MemoryOsInspectionScope::User, &onboarding);
 
         assert!(rendered.contains("<startup_memory_brief scope=\"user\""));
-        assert!(rendered.contains("3836 sessions and 7700 shell executions"));
+        assert!(rendered.contains("3836 sessions"));
+        assert!(!rendered.contains("shell executions"));
         assert!(rendered.contains("Fast startup mode skips the heavyweight full brief"));
     }
 
