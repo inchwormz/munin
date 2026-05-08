@@ -241,7 +241,7 @@ impl Tracker {
             &completed_friction_jobs,
         );
         let new_unproven_friction =
-            super::signals::build_memory_os_new_unproven_friction(&checkpoints);
+            super::signals::build_memory_os_new_unproven_friction(&checkpoints, &durable_fixes);
         let mut top_fixes = build_memory_os_friction_fixes(
             &correction_patterns,
             &likely_misunderstandings,

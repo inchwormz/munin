@@ -294,16 +294,22 @@ pub(super) struct DurableFrictionFixEvidence {
 pub(super) struct UserProseDurableFixes {
     pub(super) autonomy_polling: Option<DurableFrictionFixEvidence>,
     pub(super) codex_autonomy_polling: Option<DurableFrictionFixEvidence>,
+    pub(super) context_reversal_clarification: Option<DurableFrictionFixEvidence>,
 }
+
+const CONTEXT_REVERSAL_FRICTION_MARKER: &str = "munin-friction:context-reversal";
 
 pub(super) fn detect_user_prose_durable_fixes(project_path: Option<&str>) -> UserProseDurableFixes {
     let autonomy_polling = find_durable_autonomy_polling_instruction(project_path);
     let codex_autonomy_polling = autonomy_polling
         .clone()
         .or_else(|| find_codex_durable_autonomy_polling_instruction(project_path));
+    let context_reversal_clarification =
+        find_context_reversal_clarification_instruction(project_path);
     UserProseDurableFixes {
         autonomy_polling,
         codex_autonomy_polling,
+        context_reversal_clarification,
     }
 }
 
@@ -449,9 +455,14 @@ fn user_prose_friction_fixes(
 
 pub(super) fn build_memory_os_new_unproven_friction(
     checkpoints: &[MemoryOsCheckpointEnvelope],
+    durable_fixes: &UserProseDurableFixes,
 ) -> Vec<crate::core::memory_os::MemoryOsFrictionFix> {
     let mut wrong_terminal_evidence = Vec::new();
     let mut wrong_terminal_seen = HashSet::new();
+    let context_reversal_codified_at = durable_fixes
+        .context_reversal_clarification
+        .as_ref()
+        .map(|durable| durable.codified_at);
 
     for checkpoint in checkpoints
         .iter()
@@ -460,6 +471,11 @@ pub(super) fn build_memory_os_new_unproven_friction(
         for text in checkpoint_user_prose(checkpoint) {
             let lowered = text.to_ascii_lowercase();
             if text_has_wrong_terminal_clarification_signal(&lowered) {
+                let signal_at = checkpoint_original_signal_time(checkpoint);
+                if context_reversal_codified_at.is_some_and(|codified_at| signal_at <= codified_at)
+                {
+                    continue;
+                }
                 let key = compact_display_text(text, 180).to_ascii_lowercase();
                 if wrong_terminal_seen.insert(key) {
                     push_unique_string(
@@ -628,6 +644,29 @@ fn find_codex_durable_autonomy_polling_instruction_with_global_candidates(
     })
 }
 
+fn find_context_reversal_clarification_instruction(
+    project_path: Option<&str>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_context_reversal_clarification_instruction_with_global_candidates(
+        project_path,
+        global_context_reversal_instruction_candidates(),
+    )
+}
+
+fn find_context_reversal_clarification_instruction_with_global_candidates(
+    project_path: Option<&str>,
+    global_instruction_candidates: Vec<PathBuf>,
+) -> Option<DurableFrictionFixEvidence> {
+    let start = PathBuf::from(resolved_project_path(project_path));
+    find_nearest_agents_file(&start)
+        .and_then(durable_context_reversal_clarification_instruction_at)
+        .or_else(|| {
+            global_instruction_candidates
+                .into_iter()
+                .find_map(durable_context_reversal_clarification_instruction_at)
+        })
+}
+
 fn durable_autonomy_polling_instruction_at(
     agents_path: PathBuf,
 ) -> Option<DurableFrictionFixEvidence> {
@@ -645,6 +684,38 @@ fn durable_autonomy_polling_instruction_at(
         path: agents_path.display().to_string(),
         codified_at,
     })
+}
+
+fn durable_context_reversal_clarification_instruction_at(
+    instruction_path: PathBuf,
+) -> Option<DurableFrictionFixEvidence> {
+    let contents = std::fs::read_to_string(&instruction_path).ok()?;
+    if !instructions_file_codifies_context_reversal_clarification(&contents) {
+        return None;
+    }
+    let codified_at = instruction_context_reversal_codified_at(&contents)
+        .or_else(|| {
+            std::fs::metadata(&instruction_path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .map(DateTime::<Utc>::from)
+        })
+        .unwrap_or_else(Utc::now);
+
+    Some(DurableFrictionFixEvidence {
+        path: instruction_path.display().to_string(),
+        codified_at,
+    })
+}
+
+fn global_context_reversal_instruction_candidates() -> Vec<PathBuf> {
+    let mut candidates = global_codex_agents_candidates();
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".claude").join("CLAUDE.md"));
+        candidates.push(home.join("CLAUDE.md"));
+        candidates.push(home.join("AGENTS.md"));
+    }
+    candidates
 }
 
 fn global_codex_agents_candidates() -> Vec<PathBuf> {
@@ -701,6 +772,54 @@ fn agents_file_codifies_autonomy_polling(contents: &str) -> bool {
         || lowered.contains("without asking for permission");
 
     autonomy_contract && no_manual_polling && completion_loop
+}
+
+fn instructions_file_codifies_context_reversal_clarification(contents: &str) -> bool {
+    let lowered = contents.to_ascii_lowercase();
+    let context_slip = lowered.contains("wrong terminal")
+        || lowered.contains("context slip")
+        || lowered.contains("another terminal")
+        || lowered.contains("reverses current task")
+        || lowered.contains("reversing direction");
+    let asks_before_acting = lowered.contains("clarifying question")
+        || (lowered.contains("ask") && lowered.contains("confirm"));
+    let before_editing = lowered.contains("before editing")
+        || lowered.contains("before acting")
+        || lowered.contains("before touching")
+        || lowered.contains("before changing");
+
+    context_slip && asks_before_acting && before_editing
+}
+
+fn instruction_context_reversal_codified_at(contents: &str) -> Option<DateTime<Utc>> {
+    marker_codified_at(contents, CONTEXT_REVERSAL_FRICTION_MARKER)
+}
+
+fn marker_codified_at(contents: &str, marker: &str) -> Option<DateTime<Utc>> {
+    let marker = marker.to_ascii_lowercase();
+    contents
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains(&marker))
+        .find_map(|line| line.split_whitespace().find_map(parse_codified_at_token))
+}
+
+fn parse_codified_at_token(token: &str) -> Option<DateTime<Utc>> {
+    let trimmed = token.trim_matches(|ch: char| {
+        ch == ','
+            || ch == ';'
+            || ch == ')'
+            || ch == ']'
+            || ch == '>'
+            || ch == '-'
+            || ch == '"'
+            || ch == '\''
+    });
+    if !trimmed.to_ascii_lowercase().starts_with("codified_at=") {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(&trimmed["codified_at=".len()..])
+        .ok()
+        .map(|parsed| parsed.with_timezone(&Utc))
 }
 
 fn command_friction_fixes(
@@ -1242,6 +1361,7 @@ mod tests {
                 path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
                 codified_at,
             }),
+            context_reversal_clarification: None,
         };
         let behavior_changes = vec![
             crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
@@ -1339,6 +1459,126 @@ mod tests {
     }
 
     #[test]
+    fn context_reversal_detector_requires_context_slip_and_clarifying_guard() {
+        assert!(instructions_file_codifies_context_reversal_clarification(
+            "When a user message reverses current task framing or looks like it may belong to another terminal, ask one concise clarifying question before editing."
+        ));
+        assert!(!instructions_file_codifies_context_reversal_clarification(
+            "Ask clarifying questions when needed."
+        ));
+        assert!(!instructions_file_codifies_context_reversal_clarification(
+            "Watch for wrong terminal messages but keep editing."
+        ));
+    }
+
+    #[test]
+    fn context_reversal_marker_supplies_stable_codified_at() {
+        let codified_at = instruction_context_reversal_codified_at(
+            "<!-- munin-friction:context-reversal codified_at=2026-05-08T00:00:28Z -->",
+        )
+        .expect("codified marker");
+
+        assert_eq!(
+            codified_at,
+            DateTime::parse_from_rfc3339("2026-05-08T00:00:28Z")
+                .expect("timestamp")
+                .with_timezone(&Utc)
+        );
+    }
+
+    #[test]
+    fn context_reversal_marker_ignores_malformed_codified_at() {
+        assert!(instruction_context_reversal_codified_at(
+            "<!-- munin-friction:context-reversal codified_at=not-a-timestamp -->",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn new_context_reversal_friction_disappears_when_durably_codified() {
+        let correction_at = DateTime::parse_from_rfc3339("2026-04-20T19:03:36Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let durable_fixes = UserProseDurableFixes {
+            autonomy_polling: None,
+            codex_autonomy_polling: None,
+            context_reversal_clarification: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
+                codified_at: correction_at + Duration::days(1),
+            }),
+        };
+        let checkpoints = vec![onboarding_checkpoint(
+            "2026-04-20T19:03:36Z",
+            "2026-04-20T19:03:40Z",
+            "that was a mistake typed in the wrong terminal; ask a clarifying question before editing",
+        )];
+
+        let fixes = build_memory_os_new_unproven_friction(&checkpoints, &durable_fixes);
+
+        assert!(
+            fixes.is_empty(),
+            "old context-slip friction should be hidden once codified"
+        );
+    }
+
+    #[test]
+    fn new_context_reversal_friction_reappears_after_newer_correction() {
+        let durable_fixes = UserProseDurableFixes {
+            autonomy_polling: None,
+            codex_autonomy_polling: None,
+            context_reversal_clarification: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
+                codified_at: DateTime::parse_from_rfc3339("2026-04-20T00:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            }),
+        };
+        let checkpoints = vec![onboarding_checkpoint(
+            "2026-04-21T19:03:36Z",
+            "2026-04-21T19:03:40Z",
+            "wrong terminal context slip; ask a clarifying question before editing",
+        )];
+
+        let fixes = build_memory_os_new_unproven_friction(&checkpoints, &durable_fixes);
+
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].status, "monitoring");
+    }
+
+    #[test]
+    fn new_context_reversal_friction_filters_only_pre_codification_evidence() {
+        let durable_fixes = UserProseDurableFixes {
+            autonomy_polling: None,
+            codex_autonomy_polling: None,
+            context_reversal_clarification: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
+                codified_at: DateTime::parse_from_rfc3339("2026-04-20T00:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            }),
+        };
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-04-19T19:03:36Z",
+                "2026-04-19T19:03:40Z",
+                "wrong terminal context slip; ask a clarifying question before editing",
+            ),
+            onboarding_checkpoint(
+                "2026-04-21T19:03:36Z",
+                "2026-04-21T19:03:40Z",
+                "wrong terminal context slip; ask a clarifying question before editing",
+            ),
+        ];
+
+        let fixes = build_memory_os_new_unproven_friction(&checkpoints, &durable_fixes);
+
+        assert_eq!(fixes.len(), 1);
+        assert!(fixes[0].summary.contains("1 time"));
+        assert_eq!(fixes[0].evidence.len(), 1);
+        assert!(fixes[0].evidence[0].contains("2026-04-21T19:03:36Z"));
+    }
+
+    #[test]
     fn durable_autonomy_polling_falls_back_to_codex_global_agents() {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("project").join("child");
@@ -1413,7 +1653,8 @@ mod tests {
             "that was a mistake that munin should hopefully catch, and you should recognise the user has typed this in the wrong terminal; ask a clarifying question first to confirm before editing",
         )];
 
-        let fixes = build_memory_os_new_unproven_friction(&checkpoints);
+        let fixes =
+            build_memory_os_new_unproven_friction(&checkpoints, &UserProseDurableFixes::default());
 
         assert_eq!(fixes.len(), 1);
         assert_eq!(fixes[0].impact, "high");
