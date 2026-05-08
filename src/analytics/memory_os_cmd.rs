@@ -1219,6 +1219,20 @@ fn build_brief_watchouts(
         });
     }
 
+    for fix in friction
+        .top_fixes
+        .iter()
+        .filter(|fix| fix.fix_id.starts_with("friction:") && fix.impact != "low")
+        .filter(|fix| matches!(fix.status.as_str(), "active" | "improving" | "codified"))
+        .take(2)
+    {
+        watchouts.push(MemoryOsNarrativeFinding {
+            title: format!("Friction guardrail: {}", fix.title),
+            summary: display_text(&fix.permanent_fix, 180),
+            evidence: vec![fix.summary.clone()],
+        });
+    }
+
     if overview
         .active_work
         .iter()

@@ -997,6 +997,11 @@ fn command_friction_fixes(
             .map(|pattern| pattern.failed_replays)
             .sum::<usize>();
         let count = related.iter().map(|pattern| pattern.count).sum::<usize>();
+        let last_signal_at = related
+            .iter()
+            .filter_map(|pattern| pattern.last_observed_at.as_deref())
+            .max_by_key(|observed_at| parse_rfc3339_to_utc(observed_at))
+            .map(ToString::to_string);
         let status = friction_fix_status(count, successful, failed);
         let (impact, permanent_fix) = match misunderstanding.label.as_str() {
             "CLI syntax drift" => (
@@ -1033,7 +1038,7 @@ fn command_friction_fixes(
             ),
             permanent_fix: permanent_fix.to_string(),
             evidence: vec![format!("{} examples retained in JSON evidence", count)],
-            last_signal_at: None,
+            last_signal_at,
             score: 50 + count as i64 + successful as i64 - failed as i64,
         });
     }
@@ -1956,12 +1961,17 @@ mod tests {
             count: 2,
             successful_replays: 2,
             failed_replays: 0,
+            last_observed_at: Some("2026-05-04T00:00:00Z".to_string()),
         }];
         let misunderstandings = build_memory_os_misunderstandings(&patterns);
         let fixes = command_friction_fixes(&patterns, &misunderstandings);
 
         assert_eq!(fixes.len(), 1);
         assert_eq!(fixes[0].status, "fixed");
+        assert_eq!(
+            fixes[0].last_signal_at.as_deref(),
+            Some("2026-05-04T00:00:00Z")
+        );
         assert!(fixes[0].permanent_fix.contains("known command templates"));
         assert!(!fixes[0].summary.contains("node script.js"));
     }
@@ -2175,9 +2185,19 @@ impl Tracker {
                     count: 0,
                     successful_replays: 0,
                     failed_replays: 0,
+                    last_observed_at: Some(correction.observed_at.to_rfc3339()),
                 }
             });
             entry.count += 1;
+            let should_update_last_observed = entry
+                .last_observed_at
+                .as_deref()
+                .map(parse_rfc3339_to_utc)
+                .map(|last| correction.observed_at > last)
+                .unwrap_or(true);
+            if should_update_last_observed {
+                entry.last_observed_at = Some(correction.observed_at.to_rfc3339());
+            }
             if let Some((index, execution)) =
                 executions.iter().enumerate().find(|(index, execution)| {
                     !execution_used[*index]

@@ -406,6 +406,8 @@ pub struct MemoryOsCorrectionPatternSummary {
     pub count: usize,
     pub successful_replays: usize,
     pub failed_replays: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

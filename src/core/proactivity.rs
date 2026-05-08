@@ -1490,6 +1490,9 @@ fn render_resume_prompt_from_overview(overview: &MemoryOsOverviewReport) -> Stri
         buffer,
         "- Prefer the morning intervention and strategy nudges below."
     );
+    for rule in proactivity_command_friction_rules(&overview.top_correction_patterns) {
+        let _ = writeln!(buffer, "- {rule}");
+    }
     let _ = writeln!(buffer, "</startup_rules>");
     let _ = writeln!(buffer, "</startup_memory_brief>");
     buffer
@@ -1528,6 +1531,58 @@ fn proactivity_safe_corrections(
                 && !proactivity_text_has_command_noise(&correction.error_kind)
         })
         .collect()
+}
+
+fn proactivity_command_friction_rules(
+    corrections: &[MemoryOsCorrectionPatternSummary],
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    for correction in proactivity_safe_corrections(corrections).iter().take(12) {
+        let label = proactivity_correction_label(correction);
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+        .into_iter()
+        .filter_map(proactivity_rule_for_correction_label)
+        .take(4)
+        .collect()
+}
+
+fn proactivity_correction_label(correction: &MemoryOsCorrectionPatternSummary) -> &'static str {
+    let lowered = correction.error_kind.to_ascii_lowercase();
+    if lowered.contains("flag") || correction.wrong_command.contains("--") {
+        "CLI syntax drift"
+    } else if lowered.contains("path")
+        || lowered.contains("file")
+        || correction.wrong_command.contains('\\')
+        || correction.wrong_command.contains('/')
+    {
+        "Path assumption drift"
+    } else if lowered.contains("command") || lowered.contains("tool") {
+        "Tool availability drift"
+    } else {
+        "Execution assumption drift"
+    }
+}
+
+fn proactivity_rule_for_correction_label(label: &str) -> Option<&'static str> {
+    match label {
+        "CLI syntax drift" => Some(
+            "Command guardrail: before running abbreviated CLI syntax, use an exact known command template or check the tool help.",
+        ),
+        "Path assumption drift" => Some(
+            "Path guardrail: resolve the project root and exact script/test path before running file-sensitive commands.",
+        ),
+        "Tool availability drift" => Some(
+            "Tool guardrail: probe command availability with a cheap version/help check before relying on it.",
+        ),
+        "Execution assumption drift" => Some(
+            "Execution guardrail: run a cheap read-only probe before assuming the execution path is valid.",
+        ),
+        _ => None,
+    }
 }
 
 fn proactivity_text_has_command_noise(text: &str) -> bool {
@@ -2848,6 +2903,7 @@ mod tests {
                 count: 9,
                 successful_replays: 2,
                 failed_replays: 1,
+                last_observed_at: Some("2026-05-04T00:00:00Z".to_string()),
             }],
             active_work: vec![
                 MemoryOsNarrativeFinding {
@@ -2890,6 +2946,7 @@ mod tests {
         assert!(rendered.contains("Recent project focus: watcher-v2"));
         assert!(rendered.contains("surfaces useful user prose"));
         assert!(rendered.contains("exact commands stay in inspect/json evidence"));
+        assert!(rendered.contains("Execution guardrail"));
         assert!(!rendered.contains("40356"));
         assert!(!rendered.contains("shell executions"));
         assert!(!rendered.contains("5370"));
