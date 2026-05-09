@@ -2512,6 +2512,36 @@ mod tests {
     }
 
     #[test]
+    fn durable_friction_detection_scans_ancestor_agents_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        std::fs::write(
+            root.join("AGENTS.md"),
+            r#"
+- Friction fix: Verify the live runtime, not just source code. For CLI, watcher, daemon, browser, automation, or installed-tool fixes, run the actual user-facing command or live path before claiming completion.
+- Friction fix: Prefer outcome fixes over diagnostic summaries. When the user reports broken behavior, keep working toward an implemented and verified repair unless they explicitly ask for report-only analysis.
+- Friction fix: Resume from the last proven checkpoint. Before restarting, re-specifying, or asking the user for repeated context, recover the latest usable state from memory, session logs, git state, run artifacts, or current workspace evidence.
+- Friction fix: Do not accept proxy signals as completion. Passing tests, complete manifests, successful validators, generated reports, or substantial implementation effort are supporting evidence only; verify the explicit user-facing requirement before claiming done.
+"#,
+        )
+        .expect("write root agents");
+        let project = root.join("project").join("child");
+        std::fs::create_dir_all(&project).expect("project dirs");
+        std::fs::write(
+            root.join("project").join("AGENTS.md"),
+            "Project-local instructions without the friction fix rules.",
+        )
+        .expect("write project agents");
+
+        let durable = detect_user_prose_durable_fixes(Some(&project.display().to_string()));
+
+        assert!(durable.live_runtime_verification.is_some());
+        assert!(durable.outcome_repair.is_some());
+        assert!(durable.checkpoint_resume.is_some());
+        assert!(durable.proxy_completion.is_some());
+    }
+
+    #[test]
     fn codified_user_prose_friction_specs_are_suppressed() {
         let codified_at = DateTime::parse_from_rfc3339("2026-05-10T00:00:00Z")
             .expect("timestamp")

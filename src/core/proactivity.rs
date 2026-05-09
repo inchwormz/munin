@@ -1135,7 +1135,11 @@ fn add_friction_nudges(
     runtime: &RuntimeContext,
     report: &mut StrategyRecommendReport,
 ) -> Result<()> {
-    let friction = tracker.get_memory_os_friction_report(MemoryOsInspectionScope::User, None)?;
+    let runtime_project_path = runtime.project_path.display().to_string();
+    let friction = tracker.get_memory_os_friction_report(
+        MemoryOsInspectionScope::User,
+        Some(runtime_project_path.as_str()),
+    )?;
     let mut fixed_friction_nudges = friction
         .top_fixes
         .iter()
