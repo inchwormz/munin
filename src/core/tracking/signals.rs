@@ -664,7 +664,14 @@ const USER_PROSE_ACTIONABLE_FRICTION_SPECS: &[UserProseFrictionSpec] = &[
         permanent_fix: "Translate implementation terms into customer-safe progress, preview, design example, and outcome language.",
         impact: "medium",
         score: 101,
-        any: &["customer-facing", "customer language", "internal terms", "clone", "worker", "queue", "runtime"],
+        any: &[
+            "customer-facing",
+            "customer language",
+            "internal terms",
+            "internal worker",
+            "internal queue",
+            "runtime term",
+        ],
         all: &[],
     },
     UserProseFrictionSpec {
@@ -804,7 +811,13 @@ const USER_PROSE_ACTIONABLE_FRICTION_SPECS: &[UserProseFrictionSpec] = &[
         permanent_fix: "Use the loaded skill or repo instructions as the boundary, then expand only when the active file or failing command points there.",
         impact: "medium",
         score: 87,
-        any: &["wrong scope", "sibling skills", "unrelated", "broad scan", "scope"],
+        any: &[
+            "wrong scope",
+            "sibling skills",
+            "unrelated scope",
+            "broad scan",
+            "scope creep",
+        ],
         all: &[],
     },
     UserProseFrictionSpec {
