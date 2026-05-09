@@ -373,6 +373,10 @@ pub(super) struct UserProseDurableFixes {
     pub(super) codex_autonomy_polling: Option<DurableFrictionFixEvidence>,
     pub(super) command_noise_surface_policy: Option<DurableFrictionFixEvidence>,
     pub(super) context_reversal_clarification: Option<DurableFrictionFixEvidence>,
+    pub(super) live_runtime_verification: Option<DurableFrictionFixEvidence>,
+    pub(super) outcome_repair: Option<DurableFrictionFixEvidence>,
+    pub(super) checkpoint_resume: Option<DurableFrictionFixEvidence>,
+    pub(super) proxy_completion: Option<DurableFrictionFixEvidence>,
 }
 
 const CONTEXT_REVERSAL_FRICTION_MARKER: &str = "munin-friction:context-reversal";
@@ -384,6 +388,10 @@ pub(super) fn detect_user_prose_durable_fixes(project_path: Option<&str>) -> Use
         .or_else(|| find_codex_durable_autonomy_polling_instruction(project_path));
     let context_reversal_clarification =
         find_context_reversal_clarification_instruction(project_path);
+    let live_runtime_verification = find_live_runtime_verification_instruction(project_path);
+    let outcome_repair = find_outcome_repair_instruction(project_path);
+    let checkpoint_resume = find_checkpoint_resume_instruction(project_path);
+    let proxy_completion = find_proxy_completion_instruction(project_path);
     UserProseDurableFixes {
         autonomy_polling,
         codex_autonomy_polling,
@@ -391,6 +399,10 @@ pub(super) fn detect_user_prose_durable_fixes(project_path: Option<&str>) -> Use
             "Memory OS text surfaces suppress command/build noise",
         )),
         context_reversal_clarification,
+        live_runtime_verification,
+        outcome_repair,
+        checkpoint_resume,
+        proxy_completion,
     }
 }
 
@@ -412,6 +424,9 @@ pub(super) fn count_user_prose_signals(
         for text in checkpoint_user_prose(checkpoint) {
             let signal_key = compact_display_text(text, 220).to_ascii_lowercase();
             let lowered = text.to_ascii_lowercase();
+            if user_prose_friction_text_is_instruction_payload(&lowered) {
+                continue;
+            }
             if lowered.contains("command noise")
                 || lowered.contains("garbage")
                 || lowered.contains("useless")
@@ -1011,6 +1026,10 @@ fn user_prose_actionable_durable_fix<'a>(
         "surface-useful-friction" | "surface-what-can-be-fixed" => {
             durable_fixes.command_noise_surface_policy.as_ref()
         }
+        "verify-live-runtime" => durable_fixes.live_runtime_verification.as_ref(),
+        "focus-on-user-outcome" => durable_fixes.outcome_repair.as_ref(),
+        "resume-from-last-checkpoint" => durable_fixes.checkpoint_resume.as_ref(),
+        "avoid-proxy-completion-signals" => durable_fixes.proxy_completion.as_ref(),
         _ => None,
     }
 }
@@ -1022,6 +1041,8 @@ fn user_prose_matches_spec(lowered: &str, spec: &UserProseFrictionSpec) -> bool 
 
 fn user_prose_friction_text_is_instruction_payload(lowered: &str) -> bool {
     lowered.contains("base directory for this skill:")
+        || lowered.contains("<subagent_notification>")
+        || lowered.contains("<local-command-stdout>")
         || lowered.contains("<scheduled-task")
         || lowered.starts_with("read-only review.")
         || lowered.contains("read-only review task")
@@ -1290,6 +1311,65 @@ fn find_context_reversal_clarification_instruction_with_global_candidates(
         })
 }
 
+fn find_live_runtime_verification_instruction(
+    project_path: Option<&str>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_durable_friction_instruction(project_path, instructions_file_codifies_live_runtime)
+}
+
+fn find_outcome_repair_instruction(
+    project_path: Option<&str>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_durable_friction_instruction(project_path, instructions_file_codifies_outcome_repair)
+}
+
+fn find_checkpoint_resume_instruction(
+    project_path: Option<&str>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_durable_friction_instruction(project_path, instructions_file_codifies_checkpoint_resume)
+}
+
+fn find_proxy_completion_instruction(
+    project_path: Option<&str>,
+) -> Option<DurableFrictionFixEvidence> {
+    find_durable_friction_instruction(project_path, instructions_file_codifies_proxy_completion)
+}
+
+fn find_durable_friction_instruction(
+    project_path: Option<&str>,
+    predicate: fn(&str) -> bool,
+) -> Option<DurableFrictionFixEvidence> {
+    let start = PathBuf::from(resolved_project_path(project_path));
+    find_ancestor_agents_files(&start)
+        .into_iter()
+        .find_map(|path| durable_friction_instruction_at(path, predicate))
+        .or_else(|| {
+            global_context_reversal_instruction_candidates()
+                .into_iter()
+                .find_map(|path| durable_friction_instruction_at(path, predicate))
+        })
+}
+
+fn durable_friction_instruction_at(
+    instruction_path: PathBuf,
+    predicate: fn(&str) -> bool,
+) -> Option<DurableFrictionFixEvidence> {
+    let contents = std::fs::read_to_string(&instruction_path).ok()?;
+    if !predicate(&contents) {
+        return None;
+    }
+    let codified_at = std::fs::metadata(&instruction_path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(Utc::now);
+
+    Some(DurableFrictionFixEvidence {
+        path: instruction_path.display().to_string(),
+        codified_at,
+    })
+}
+
 fn durable_autonomy_polling_instruction_at(
     agents_path: PathBuf,
 ) -> Option<DurableFrictionFixEvidence> {
@@ -1366,6 +1446,30 @@ fn codex_home_agents_candidate(codex_home: &str) -> Option<PathBuf> {
     Some(path.join("AGENTS.md"))
 }
 
+fn find_ancestor_agents_files(start: &Path) -> Vec<PathBuf> {
+    let mut cursor = if start.is_file() {
+        match start.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return Vec::new(),
+        }
+    } else {
+        start.to_path_buf()
+    };
+    let mut candidates = Vec::new();
+
+    loop {
+        let candidate = cursor.join("AGENTS.md");
+        if candidate.is_file() {
+            candidates.push(candidate);
+        }
+        if !cursor.pop() {
+            break;
+        }
+    }
+
+    candidates
+}
+
 fn find_nearest_agents_file(start: &Path) -> Option<PathBuf> {
     let mut cursor = if start.is_file() {
         start.parent()?.to_path_buf()
@@ -1412,6 +1516,34 @@ fn instructions_file_codifies_context_reversal_clarification(contents: &str) -> 
         || lowered.contains("before changing");
 
     context_slip && asks_before_acting && before_editing
+}
+
+fn instructions_file_codifies_live_runtime(contents: &str) -> bool {
+    let lowered = contents.to_ascii_lowercase();
+    lowered.contains("verify the live runtime")
+        && lowered.contains("not just source code")
+        && (lowered.contains("actual user-facing command") || lowered.contains("live path"))
+}
+
+fn instructions_file_codifies_outcome_repair(contents: &str) -> bool {
+    let lowered = contents.to_ascii_lowercase();
+    lowered.contains("prefer outcome fixes")
+        && lowered.contains("diagnostic summaries")
+        && lowered.contains("implemented and verified repair")
+}
+
+fn instructions_file_codifies_checkpoint_resume(contents: &str) -> bool {
+    let lowered = contents.to_ascii_lowercase();
+    lowered.contains("resume from the last proven checkpoint")
+        && lowered.contains("before restarting")
+        && lowered.contains("latest usable state")
+}
+
+fn instructions_file_codifies_proxy_completion(contents: &str) -> bool {
+    let lowered = contents.to_ascii_lowercase();
+    lowered.contains("do not accept proxy signals as completion")
+        && lowered.contains("supporting evidence")
+        && lowered.contains("user-facing requirement")
 }
 
 fn instruction_context_reversal_codified_at(contents: &str) -> Option<DateTime<Utc>> {
@@ -2208,6 +2340,7 @@ mod tests {
             }),
             command_noise_surface_policy: None,
             context_reversal_clarification: None,
+            ..UserProseDurableFixes::default()
         };
         let behavior_changes = vec![
             crate::core::memory_os::MemoryOsBehaviorChangeRecommendation {
@@ -2364,6 +2497,103 @@ mod tests {
     }
 
     #[test]
+    fn friction_guidance_detectors_recognize_codified_hot_path_rules() {
+        let contents = r#"
+- Friction fix: Verify the live runtime, not just source code. For CLI, watcher, daemon, browser, automation, or installed-tool fixes, run the actual user-facing command or live path before claiming completion.
+- Friction fix: Prefer outcome fixes over diagnostic summaries. When the user reports broken behavior, keep working toward an implemented and verified repair unless they explicitly ask for report-only analysis.
+- Friction fix: Resume from the last proven checkpoint. Before restarting, re-specifying, or asking the user for repeated context, recover the latest usable state from memory, session logs, git state, run artifacts, or current workspace evidence.
+- Friction fix: Do not accept proxy signals as completion. Passing tests, complete manifests, successful validators, generated reports, or substantial implementation effort are supporting evidence only; verify the explicit user-facing requirement before claiming done.
+"#;
+
+        assert!(instructions_file_codifies_live_runtime(contents));
+        assert!(instructions_file_codifies_outcome_repair(contents));
+        assert!(instructions_file_codifies_checkpoint_resume(contents));
+        assert!(instructions_file_codifies_proxy_completion(contents));
+    }
+
+    #[test]
+    fn codified_user_prose_friction_specs_are_suppressed() {
+        let codified_at = DateTime::parse_from_rfc3339("2026-05-10T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let durable = DurableFrictionFixEvidence {
+            path: "C:/Users/OEM/Projects/AGENTS.md".to_string(),
+            codified_at,
+        };
+        let durable_fixes = UserProseDurableFixes {
+            live_runtime_verification: Some(durable.clone()),
+            outcome_repair: Some(durable.clone()),
+            checkpoint_resume: Some(durable),
+            proxy_completion: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/Projects/AGENTS.md".to_string(),
+                codified_at,
+            }),
+            ..UserProseDurableFixes::default()
+        };
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-09T00:00:00Z",
+                "2026-05-09T00:00:00Z",
+                "verify the live runtime, not just source code",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:01:00Z",
+                "2026-05-09T00:01:00Z",
+                "verify the live runtime, not just source code; this keeps happening",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:02:00Z",
+                "2026-05-09T00:02:00Z",
+                "broken behavior needs repair, not a report",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:03:00Z",
+                "2026-05-09T00:03:00Z",
+                "broken behavior needs repair, not a report; this keeps happening",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:04:00Z",
+                "2026-05-09T00:04:00Z",
+                "resume from the last proven checkpoint",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:05:00Z",
+                "2026-05-09T00:05:00Z",
+                "resume from the last proven checkpoint; this keeps happening",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:06:00Z",
+                "2026-05-09T00:06:00Z",
+                "not done until the completion audit maps evidence to every requirement",
+            ),
+            onboarding_checkpoint(
+                "2026-05-09T00:07:00Z",
+                "2026-05-09T00:07:00Z",
+                "not done until the completion audit maps evidence to every requirement; this keeps happening",
+            ),
+        ];
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &durable_fixes,
+            codified_at + Duration::days(1),
+        );
+
+        assert!(!fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:verify-live-runtime"));
+        assert!(!fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:focus-on-user-outcome"));
+        assert!(!fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:resume-from-last-checkpoint"));
+        assert!(!fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:avoid-proxy-completion-signals"));
+    }
+
+    #[test]
     fn context_reversal_marker_supplies_stable_codified_at() {
         let codified_at = instruction_context_reversal_codified_at(
             "<!-- munin-friction:context-reversal codified_at=2026-05-08T00:00:28Z -->",
@@ -2399,6 +2629,7 @@ mod tests {
                 path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
                 codified_at: correction_at + Duration::days(1),
             }),
+            ..UserProseDurableFixes::default()
         };
         let checkpoints = vec![onboarding_checkpoint(
             "2026-04-20T19:03:36Z",
@@ -2426,6 +2657,7 @@ mod tests {
                     .expect("timestamp")
                     .with_timezone(&Utc),
             }),
+            ..UserProseDurableFixes::default()
         };
         let checkpoints = vec![onboarding_checkpoint(
             "2026-04-21T19:03:36Z",
@@ -2451,6 +2683,7 @@ mod tests {
                     .expect("timestamp")
                     .with_timezone(&Utc),
             }),
+            ..UserProseDurableFixes::default()
         };
         let checkpoints = vec![
             onboarding_checkpoint(
