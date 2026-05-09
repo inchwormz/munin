@@ -928,9 +928,6 @@ fn preserve_approval_job_status(
         {
             ApprovalJobStatus::Approved
         }
-        Some(ApprovalJobStatus::Queued) if incoming == ApprovalJobStatus::Suppressed => {
-            ApprovalJobStatus::Queued
-        }
         Some(ApprovalJobStatus::Deferred) if incoming == ApprovalJobStatus::Suppressed => {
             ApprovalJobStatus::Deferred
         }
@@ -1116,6 +1113,18 @@ fn record_proactivity_approval_jobs(
                 expires_at: expires_at.clone(),
             },
         )?;
+        if status == crate::core::tracking::ApprovalJobStatus::Suppressed
+            && nudge.item_kind == "friction-fix"
+        {
+            tracker.suppress_related_pending_friction_jobs(
+                nudge.item_id.as_deref(),
+                result_path.as_deref(),
+                nudge
+                    .suppression_reason
+                    .as_deref()
+                    .unwrap_or("friction no longer actionable"),
+            )?;
+        }
     }
 
     Ok(())
@@ -1127,6 +1136,13 @@ fn add_friction_nudges(
     report: &mut StrategyRecommendReport,
 ) -> Result<()> {
     let friction = tracker.get_memory_os_friction_report(MemoryOsInspectionScope::User, None)?;
+    let mut fixed_friction_nudges = friction
+        .top_fixes
+        .iter()
+        .filter(|fix| matches!(fix.status.as_str(), "codified" | "fixed" | "retired"))
+        .map(friction_fix_to_nudge)
+        .map(|nudge| with_suppression_reason(nudge, "watching_for_recurrence"))
+        .collect::<Vec<_>>();
     let mut friction_nudges = friction
         .top_fixes
         .iter()
@@ -1134,6 +1150,7 @@ fn add_friction_nudges(
         .take(MAX_FRICTION_NUDGES)
         .map(friction_fix_to_nudge)
         .collect::<Vec<_>>();
+    report.suppressed_nudges.append(&mut fixed_friction_nudges);
     report
         .nudge_tasks
         .extend(friction_nudges.iter().map(|nudge| nudge.task.clone()));
@@ -3292,6 +3309,44 @@ mod tests {
             .expect("seed completed friction approval");
     }
 
+    fn seed_pending_friction_fix_for_item(
+        tracker: &Tracker,
+        project_path: &str,
+        item_id: &str,
+        status: crate::core::tracking::ApprovalJobStatus,
+    ) -> String {
+        let job_id = format!(
+            "approval-sitesorted-2026-05-09-friction-fix-{}",
+            item_id.replace(':', "-")
+        );
+        tracker
+            .upsert_approval_job_for_project(
+                project_path,
+                &crate::core::tracking::ApprovalJobInput {
+                    job_id: job_id.clone(),
+                    scope: "project".to_string(),
+                    scope_target: Some(project_path.to_string()),
+                    local_date: "2026-05-09".to_string(),
+                    item_id: Some(item_id.to_string()),
+                    item_kind: "friction-fix".to_string(),
+                    title: format!("Fix {item_id}"),
+                    summary: "pending stale friction approval".to_string(),
+                    status,
+                    source_kind: "strategy-nudge".to_string(),
+                    provider: Some("codex".to_string()),
+                    continuity_active: false,
+                    expected_effect: Some("Reduce recurring friction.".to_string()),
+                    queue_path: Some("C:/tmp/queue.json".to_string()),
+                    result_path: None,
+                    evidence_json: "[]".to_string(),
+                    review_after: Some("2026-05-10T00:00:00Z".to_string()),
+                    expires_at: Some("2026-05-16T00:00:00Z".to_string()),
+                },
+            )
+            .expect("seed queued friction approval");
+        job_id
+    }
+
     #[test]
     fn completed_friction_fix_is_suppressed_when_evidence_changes_without_new_signal() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3354,6 +3409,50 @@ mod tests {
     }
 
     #[test]
+    fn suppress_related_pending_friction_jobs_clears_family_variants() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
+        let behavior_job = seed_pending_friction_fix_for_item(
+            &tracker,
+            "C:/Users/OEM/Projects/munin-memory.omx-worktrees/fix-command-noise-memory",
+            "friction:behavior:codex",
+            crate::core::tracking::ApprovalJobStatus::Approved,
+        );
+        let command_job = seed_pending_friction_fix_for_item(
+            &tracker,
+            "C:/Users/OEM/Projects/munin-memory",
+            "friction:path-assumption-drift",
+            crate::core::tracking::ApprovalJobStatus::Queued,
+        );
+
+        let suppressed = tracker
+            .suppress_related_pending_friction_jobs(
+                Some("friction:autonomy-polling"),
+                Some("C:/tmp/result.json"),
+                "watching_for_recurrence",
+            )
+            .expect("suppress queued family");
+
+        assert_eq!(suppressed, 1);
+        assert_eq!(
+            tracker
+                .get_approval_job(&behavior_job)
+                .expect("behavior job")
+                .expect("behavior job exists")
+                .status,
+            crate::core::tracking::ApprovalJobStatus::Suppressed
+        );
+        assert_eq!(
+            tracker
+                .get_approval_job(&command_job)
+                .expect("command job")
+                .expect("command job exists")
+                .status,
+            crate::core::tracking::ApprovalJobStatus::Queued
+        );
+    }
+
+    #[test]
     fn completed_friction_fix_requeues_when_signal_is_newer_than_completion() {
         let temp = tempfile::tempdir().expect("tempdir");
         let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
@@ -3379,6 +3478,24 @@ mod tests {
         assert_eq!(report.nudges.len(), 1);
         assert_eq!(report.nudge_tasks.len(), 1);
         assert!(report.suppressed_nudges.is_empty());
+    }
+
+    #[test]
+    fn queued_jobs_can_be_suppressed_when_the_item_is_no_longer_actionable() {
+        assert_eq!(
+            preserve_approval_job_status(
+                Some(crate::core::tracking::ApprovalJobStatus::Queued),
+                crate::core::tracking::ApprovalJobStatus::Suppressed,
+            ),
+            crate::core::tracking::ApprovalJobStatus::Suppressed
+        );
+        assert_eq!(
+            preserve_approval_job_status(
+                Some(crate::core::tracking::ApprovalJobStatus::Approved),
+                crate::core::tracking::ApprovalJobStatus::Suppressed,
+            ),
+            crate::core::tracking::ApprovalJobStatus::Approved
+        );
     }
 
     #[test]

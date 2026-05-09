@@ -100,12 +100,13 @@ pub fn friction_fix_item_ids_related(left: Option<&str>, right: Option<&str>) ->
     let (Some(left), Some(right)) = (left, right) else {
         return false;
     };
-    friction_fix_family(left)
-        .zip(friction_fix_family(right))
+    command_friction_family(left)
+        .zip(command_friction_family(right))
         .is_some_and(|(left_family, right_family)| left_family == right_family)
+        || left == "friction:autonomy-polling" && autonomy_behavior_variant(right)
 }
 
-fn friction_fix_family(item_id: &str) -> Option<&'static str> {
+fn command_friction_family(item_id: &str) -> Option<&'static str> {
     match item_id {
         "friction:user-command-noise"
         | "friction:cli-syntax-drift"
@@ -114,6 +115,13 @@ fn friction_fix_family(item_id: &str) -> Option<&'static str> {
         | "friction:tool-availability-drift" => Some("command-friction"),
         _ => None,
     }
+}
+
+fn autonomy_behavior_variant(item_id: &str) -> bool {
+    matches!(
+        item_id,
+        "friction:behavior:codex" | "friction:behavior:claude"
+    )
 }
 
 #[cfg(test)]
@@ -133,6 +141,22 @@ mod tests {
         assert!(!friction_fix_item_ids_related(
             Some("friction:cli-syntax-drift"),
             Some("friction:autonomy-polling")
+        ));
+    }
+
+    #[test]
+    fn autonomy_polling_umbrella_covers_agent_behavior_variants() {
+        assert!(friction_fix_item_ids_related(
+            Some("friction:autonomy-polling"),
+            Some("friction:behavior:codex")
+        ));
+        assert!(!friction_fix_item_ids_related(
+            Some("friction:behavior:claude"),
+            Some("friction:autonomy-polling")
+        ));
+        assert!(!friction_fix_item_ids_related(
+            Some("friction:behavior:claude"),
+            Some("friction:path-assumption-drift")
         ));
     }
 }
@@ -269,6 +293,40 @@ impl Tracker {
             ],
         )?;
         Ok(updated > 0)
+    }
+
+    pub fn suppress_related_pending_friction_jobs(
+        &self,
+        item_id: Option<&str>,
+        result_path: Option<&str>,
+        closure_reason: &str,
+    ) -> Result<usize> {
+        let Some(item_id) = item_id else {
+            return Ok(0);
+        };
+        let pending = self.get_approval_jobs_filtered(
+            2_000,
+            None,
+            Some(&[ApprovalJobStatus::Queued, ApprovalJobStatus::Approved]),
+        )?;
+        let mut suppressed = 0;
+        for job in pending {
+            if job.item_kind != "friction-fix"
+                || !friction_fix_item_ids_related(Some(item_id), job.item_id.as_deref())
+            {
+                continue;
+            }
+            if self.set_approval_job_status(
+                &job.job_id,
+                ApprovalJobStatus::Suppressed,
+                None,
+                result_path,
+                Some(closure_reason),
+            )? {
+                suppressed += 1;
+            }
+        }
+        Ok(suppressed)
     }
 
     pub fn get_approval_jobs_filtered(
