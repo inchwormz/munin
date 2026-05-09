@@ -1149,13 +1149,12 @@ fn add_friction_nudges(
 
 fn suppress_completed_friction_nudges(
     tracker: &Tracker,
-    runtime: &RuntimeContext,
+    _runtime: &RuntimeContext,
     report: &mut StrategyRecommendReport,
 ) -> Result<()> {
-    let project_path = runtime.project_path.display().to_string();
     let completed = tracker.get_approval_jobs_filtered(
         500,
-        Some(&project_path),
+        None,
         Some(&[crate::core::tracking::ApprovalJobStatus::Completed]),
     )?;
     if completed.is_empty() {
@@ -1191,7 +1190,10 @@ fn completed_friction_fix_still_watching(
 ) -> bool {
     completed.iter().any(|record| {
         record.item_kind == nudge.item_kind
-            && record.item_id == nudge.item_id
+            && crate::core::tracking::friction_fix_item_ids_related(
+                record.item_id.as_deref(),
+                nudge.item_id.as_deref(),
+            )
             && !friction_signal_is_newer_than_completion(nudge.last_signal_at.as_deref(), record)
     })
 }
@@ -3244,19 +3246,34 @@ mod tests {
     }
 
     fn seed_completed_friction_fix(tracker: &Tracker, project_path: &str, evidence: &[String]) {
+        seed_completed_friction_fix_for_item(
+            tracker,
+            project_path,
+            "friction:autonomy-polling",
+            evidence,
+        )
+    }
+
+    fn seed_completed_friction_fix_for_item(
+        tracker: &Tracker,
+        project_path: &str,
+        item_id: &str,
+        evidence: &[String],
+    ) {
         tracker
             .upsert_approval_job_for_project(
                 project_path,
                 &crate::core::tracking::ApprovalJobInput {
-                    job_id: "approval-sitesorted-business-2026-05-01-friction-fix-autonomy"
-                        .to_string(),
+                    job_id: format!(
+                        "approval-sitesorted-business-2026-05-01-friction-fix-{}",
+                        item_id.replace(':', "-")
+                    ),
                     scope: "project".to_string(),
                     scope_target: Some(project_path.to_string()),
                     local_date: "2026-05-01".to_string(),
-                    item_id: Some("friction:autonomy-polling".to_string()),
+                    item_id: Some(item_id.to_string()),
                     item_kind: "friction-fix".to_string(),
-                    title: "Fix friction: Keep autonomous work moving without manual polling"
-                        .to_string(),
+                    title: format!("Fix {item_id}"),
                     summary: "done; watching for recurrence".to_string(),
                     status: crate::core::tracking::ApprovalJobStatus::Completed,
                     source_kind: "strategy-nudge".to_string(),
@@ -3296,6 +3313,39 @@ mod tests {
 
         assert!(report.nudges.is_empty());
         assert!(report.nudge_tasks.is_empty());
+        assert_eq!(report.suppressed_nudges.len(), 1);
+        assert_eq!(
+            report.suppressed_nudges[0].suppression_reason.as_deref(),
+            Some("watching_for_recurrence")
+        );
+    }
+
+    #[test]
+    fn completed_friction_fix_suppresses_related_command_family_across_projects() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
+        let runtime_project = temp.path().join("project");
+        let runtime = sample_runtime_with_project(runtime_project.clone(), temp.path());
+        seed_completed_friction_fix_for_item(
+            &tracker,
+            "C:/Windows/System32",
+            "friction:cli-syntax-drift",
+            &["command guardrail completed".to_string()],
+        );
+
+        let mut nudge = sample_friction_nudge(
+            vec!["174 examples retained in JSON evidence".to_string()],
+            "2026-05-01T00:00:00Z",
+        );
+        nudge.task = "Fix friction: Path assumption drift".to_string();
+        nudge.item_id = Some("friction:path-assumption-drift".to_string());
+        nudge.expected_effect =
+            "Permanently reduce recurring friction: resolve paths first.".to_string();
+        let mut report = sample_recommend_report_with_nudge(nudge);
+
+        suppress_completed_friction_nudges(&tracker, &runtime, &mut report).expect("suppression");
+
+        assert!(report.nudges.is_empty());
         assert_eq!(report.suppressed_nudges.len(), 1);
         assert_eq!(
             report.suppressed_nudges[0].suppression_reason.as_deref(),

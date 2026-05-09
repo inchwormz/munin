@@ -324,7 +324,7 @@ fn completed_friction_fix_matches(
 ) -> bool {
     completed.iter().any(|record| {
         record.item_kind == item_kind
-            && record.item_id.as_deref() == item_id
+            && super::friction_fix_item_ids_related(record.item_id.as_deref(), item_id)
             && !friction_signal_is_newer_than_completion(last_signal_at, record)
     })
 }
@@ -1527,6 +1527,29 @@ mod tests {
 
         assert_eq!(fixes[0].status, "fixed");
         assert_eq!(fixes[1].status, "active");
+    }
+
+    #[test]
+    fn completed_command_family_status_applies_to_related_friction_ids() {
+        let completed = vec![completed_friction_record(
+            "friction:cli-syntax-drift",
+            &["command guardrail completed".to_string()],
+        )];
+        let mut fixes = vec![crate::core::memory_os::MemoryOsFrictionFix {
+            fix_id: "friction:path-assumption-drift".to_string(),
+            title: "Path assumption drift".to_string(),
+            impact: "medium".to_string(),
+            status: "active".to_string(),
+            summary: "old signal".to_string(),
+            permanent_fix: "resolve paths".to_string(),
+            evidence: vec!["174 examples retained in JSON evidence".to_string()],
+            last_signal_at: Some("2026-05-01T00:00:00Z".to_string()),
+            score: 120,
+        }];
+
+        apply_completed_friction_statuses(&mut fixes, &completed);
+
+        assert_eq!(fixes[0].status, "fixed");
     }
 
     #[test]

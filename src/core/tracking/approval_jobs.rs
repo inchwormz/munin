@@ -93,6 +93,50 @@ pub struct ApprovalJobInput {
     pub expires_at: Option<String>,
 }
 
+pub fn friction_fix_item_ids_related(left: Option<&str>, right: Option<&str>) -> bool {
+    if left == right {
+        return true;
+    }
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    friction_fix_family(left)
+        .zip(friction_fix_family(right))
+        .is_some_and(|(left_family, right_family)| left_family == right_family)
+}
+
+fn friction_fix_family(item_id: &str) -> Option<&'static str> {
+    match item_id {
+        "friction:user-command-noise"
+        | "friction:cli-syntax-drift"
+        | "friction:path-assumption-drift"
+        | "friction:execution-assumption-drift"
+        | "friction:tool-availability-drift" => Some("command-friction"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_friction_item_ids_share_a_completion_family() {
+        assert!(friction_fix_item_ids_related(
+            Some("friction:user-command-noise"),
+            Some("friction:path-assumption-drift")
+        ));
+        assert!(friction_fix_item_ids_related(
+            Some("friction:cli-syntax-drift"),
+            Some("friction:execution-assumption-drift")
+        ));
+        assert!(!friction_fix_item_ids_related(
+            Some("friction:cli-syntax-drift"),
+            Some("friction:autonomy-polling")
+        ));
+    }
+}
+
 impl Tracker {
     pub fn upsert_approval_job_for_project(
         &self,

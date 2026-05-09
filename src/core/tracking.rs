@@ -56,7 +56,9 @@ mod reports;
 mod signals;
 mod trust;
 
-pub use self::approval_jobs::{ApprovalJobInput, ApprovalJobRecord, ApprovalJobStatus};
+pub use self::approval_jobs::{
+    friction_fix_item_ids_related, ApprovalJobInput, ApprovalJobRecord, ApprovalJobStatus,
+};
 use self::checkpoint::MemoryOsCheckpointEnvelope;
 pub use self::claim_leases::{
     ClaimLeaseConfidence, ClaimLeaseDependency, ClaimLeaseDependencyKind, ClaimLeaseRecord,
