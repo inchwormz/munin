@@ -3257,11 +3257,17 @@ fn apply_friction_filters(
             .unwrap_or(true);
         let time_matches = since
             .map(|since| {
-                fix.evidence.iter().any(|line| {
-                    first_rfc3339_timestamp(line)
-                        .map(|timestamp| timestamp >= since)
-                        .unwrap_or(false)
-                })
+                fix.last_signal_at
+                    .as_deref()
+                    .and_then(first_rfc3339_timestamp)
+                    .map(|timestamp| timestamp >= since)
+                    .unwrap_or_else(|| {
+                        fix.evidence.iter().any(|line| {
+                            first_rfc3339_timestamp(line)
+                                .map(|timestamp| timestamp >= since)
+                                .unwrap_or(false)
+                        })
+                    })
             })
             .unwrap_or(true);
         agent_matches && time_matches
@@ -3282,11 +3288,17 @@ fn apply_friction_filters(
             .unwrap_or(true);
         let time_matches = since
             .map(|since| {
-                fix.evidence.iter().any(|line| {
-                    first_rfc3339_timestamp(line)
-                        .map(|timestamp| timestamp >= since)
-                        .unwrap_or(false)
-                })
+                fix.last_signal_at
+                    .as_deref()
+                    .and_then(first_rfc3339_timestamp)
+                    .map(|timestamp| timestamp >= since)
+                    .unwrap_or_else(|| {
+                        fix.evidence.iter().any(|line| {
+                            first_rfc3339_timestamp(line)
+                                .map(|timestamp| timestamp >= since)
+                                .unwrap_or(false)
+                        })
+                    })
             })
             .unwrap_or(true);
         agent_matches && time_matches

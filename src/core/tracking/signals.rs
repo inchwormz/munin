@@ -260,6 +260,11 @@ pub(super) fn build_memory_os_friction_fixes(
     let now = Utc::now();
     let prose_signal_counts = count_user_prose_signals(checkpoints);
     fixes.extend(user_prose_friction_fixes(checkpoints, durable_fixes, now));
+    fixes.extend(user_prose_actionable_friction_fixes(
+        checkpoints,
+        durable_fixes,
+        now,
+    ));
     fixes.extend(command_friction_fixes(
         correction_patterns,
         likely_misunderstandings,
@@ -567,6 +572,458 @@ fn user_prose_friction_fixes(
         });
     }
     fixes
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UserProseFrictionSpec {
+    id: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    permanent_fix: &'static str,
+    impact: &'static str,
+    score: i64,
+    any: &'static [&'static str],
+    all: &'static [&'static str],
+}
+
+const USER_PROSE_ACTIONABLE_FRICTION_SPECS: &[UserProseFrictionSpec] = &[
+    UserProseFrictionSpec {
+        id: "resume-from-last-checkpoint",
+        title: "Resume from the last proven checkpoint",
+        summary: "User frustration says agents restart or re-spec work instead of continuing from proven session state.",
+        permanent_fix: "Recover the last proven checkpoint from memory, session logs, git state, or run artifacts before restarting the task.",
+        impact: "high",
+        score: 108,
+        any: &["pick up exactly where", "continue from", "last proven checkpoint", "where it left off", "resume"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "fix-real-pipeline-end-to-end",
+        title: "Fix the real pipeline end to end",
+        summary: "User frustration says agents patch a visible symptom while the actual automation path remains broken.",
+        permanent_fix: "Trace the complete producer, runner, persistence, and consumer path, then verify the live command that was failing.",
+        impact: "high",
+        score: 107,
+        any: &["end-to-end", "end to end", "real pipeline", "actual pipeline", "not picking up", "automation"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "verify-live-runtime",
+        title: "Verify the live runtime, not just source code",
+        summary: "User frustration says source changes are reported as fixed before the installed binary, daemon, watcher, or browser path proves it.",
+        permanent_fix: "Run the installed/live command or service path that the user actually depends on before claiming the fix works.",
+        impact: "high",
+        score: 106,
+        any: &["live environment", "live runtime", "actual runtime", "running process", "installed binary", "watcher"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "promotion-from-temp-worktree",
+        title: "Promote verified temp work back to the live checkout",
+        summary: "User frustration says completed fixes get stranded in scratch or temporary worktrees instead of reaching the active checkout.",
+        permanent_fix: "After verification, merge or apply the verified change into the live checkout and refresh the process using it.",
+        impact: "high",
+        score: 105,
+        any: &["temp worktree", "temporary worktree", "promote it back", "live checkout", "stranded"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "surface-useful-friction",
+        title: "Surface useful friction instead of empty reports",
+        summary: "User frustration says Munin hides obvious personal frustration and returns little or nothing actionable.",
+        permanent_fix: "Rank explicit user frustration and correction prose as first-class friction candidates, not just command replay failures.",
+        impact: "high",
+        score: 104,
+        any: &["friction", "personal frustration", "nothing appears", "useful work every day", "surface"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "memory-freshness-before-answering",
+        title: "Refresh memory before trusting stale answers",
+        summary: "User frustration says stale memory or recall output is used after newer local evidence exists.",
+        permanent_fix: "Check current memory status and refresh/import sessions before using memory-derived claims when freshness matters.",
+        impact: "high",
+        score: 103,
+        any: &["stale", "outdated", "not current", "refresh", "new sessions", "indexed", "embedded"],
+        all: &["memory"],
+    },
+    UserProseFrictionSpec {
+        id: "recover-from-session-history",
+        title: "Use session history when recall is incomplete",
+        summary: "User frustration says agents stop when recall is empty despite local session JSONL and git history containing the answer.",
+        permanent_fix: "When recall misses, inspect local session exports, recent git history, and run directories before declaring no context.",
+        impact: "high",
+        score: 102,
+        any: &["session history", "session jsonl", "recall is empty", "can't use recall", "git history"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "avoid-internal-customer-language",
+        title: "Keep customer-facing language safe and external",
+        summary: "User frustration says agents expose internal terms in customer-visible product or status surfaces.",
+        permanent_fix: "Translate implementation terms into customer-safe progress, preview, design example, and outcome language.",
+        impact: "medium",
+        score: 101,
+        any: &["customer-facing", "customer language", "internal terms", "clone", "worker", "queue", "runtime"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "browser-proof-for-ui",
+        title: "Use browser proof for UI and frontend claims",
+        summary: "User frustration says UI work is treated as done without browser verification of the actual page.",
+        permanent_fix: "Open the local page, inspect the DOM or screenshot, and fix visible problems before reporting UI completion.",
+        impact: "medium",
+        score: 100,
+        any: &["browser", "screenshot", "localhost", "visual", "ui", "frontend"],
+        all: &["verify"],
+    },
+    UserProseFrictionSpec {
+        id: "focus-on-user-outcome",
+        title: "Prefer outcome fixes over diagnostic summaries",
+        summary: "User frustration says agents summarize what broke instead of repairing the workflow until it is useful.",
+        permanent_fix: "Turn diagnosis into an implemented and verified repair unless the user explicitly asks for report-only analysis.",
+        impact: "high",
+        score: 99,
+        any: &["fix this", "repair", "broken", "useful work", "do useful", "not a report"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "respect-worktree-hygiene",
+        title: "Keep worktree changes committed and cleaned up",
+        summary: "User frustration says worktrees are left dirty, stale, or disconnected from the finished work.",
+        permanent_fix: "Commit isolated worktree fixes, promote them, and remove stale worktrees after successful integration.",
+        impact: "medium",
+        score: 98,
+        any: &["worktree", "dirty", "stale tree", "remove the worktree", "commit"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "inspect-active-config",
+        title: "Inspect the active config surface before assuming paths",
+        summary: "User frustration says agents edit the obvious config file while the active pane, env var, or installed command uses another one.",
+        permanent_fix: "Check the active environment, command path, and config home before editing configuration or MCP/runtime wiring.",
+        impact: "high",
+        score: 97,
+        any: &["codex_home", "active config", "config.toml", "mcp list", "pane-local", "environment"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "windows-native-paths",
+        title: "Handle Windows paths and shims correctly",
+        summary: "User frustration says agents assume Unix paths or wrapper behavior on this Windows machine.",
+        permanent_fix: "Use Windows-native paths, PowerShell-aware quoting, and known direct binaries when shims or Unix paths are suspect.",
+        impact: "medium",
+        score: 96,
+        any: &["windows", "powershell", "c:\\", "tmp", "node.exe", "nvm4w", "shim"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "do-not-overask-permission",
+        title: "Stop asking for permission on obvious next steps",
+        summary: "User frustration says agents pause for confirmation instead of executing safe continuation steps.",
+        permanent_fix: "Proceed through safe diagnostic, implementation, and verification steps; ask only for destructive or materially branching choices.",
+        impact: "high",
+        score: 95,
+        any: &["should i proceed", "asking for permission", "without asking", "don't ask", "do not wait"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "layman-first-when-requested",
+        title: "Explain in layman terms first when asked",
+        summary: "User frustration says agents answer implementation detail when the request is for plain-English understanding.",
+        permanent_fix: "Lead with a simple everyday explanation, then answer direct implementation follow-ups precisely.",
+        impact: "medium",
+        score: 94,
+        any: &["laymans terms", "layman", "plain english", "teach me"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "direct-implementation-answers",
+        title: "Answer direct implementation questions directly",
+        summary: "User frustration says agents stay at a high-level overview after the user asks a concrete implementation question.",
+        permanent_fix: "When the user asks whether a component uses a tool or path, inspect the code and answer that point directly.",
+        impact: "medium",
+        score: 93,
+        any: &["does it use", "implementation-specific", "direct question", "firecrawl"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "avoid-proxy-completion-signals",
+        title: "Do not accept proxy signals as completion",
+        summary: "User frustration says passing tests or generated manifests are treated as completion without covering the real requirement.",
+        permanent_fix: "Map every explicit requirement to evidence and verify the user-facing behavior, not just proxy green checks.",
+        impact: "high",
+        score: 92,
+        any: &["proxy", "manifest", "not done until", "completion audit", "verify", "evidence"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "keep-proactivity-actionable",
+        title: "Make proactivity pick fixable work",
+        summary: "User frustration says daily proactivity surfaces stale or already-solved items instead of useful fixable work.",
+        permanent_fix: "Filter completed, codified, monitoring, and stale nudges out of the primary queue and rank fresh fixable friction first.",
+        impact: "high",
+        score: 91,
+        any: &["proactivity", "daily", "morning", "nudge", "already", "monitoring"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "do-not-revert-user-work",
+        title: "Do not revert unrelated user changes",
+        summary: "User frustration says agents risk undoing work that was not theirs while trying to clean a checkout.",
+        permanent_fix: "Inspect dirty changes, isolate your diff, and never reset or revert unrelated files without explicit request.",
+        impact: "high",
+        score: 90,
+        any: &["do not revert", "don't revert", "unrelated changes", "dirty checkout", "reset --hard"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "prefer-existing-patterns",
+        title: "Follow existing project patterns",
+        summary: "User frustration says agents invent new abstractions or dependencies instead of using local conventions.",
+        permanent_fix: "Read nearby code first, reuse established helpers, and keep diffs scoped unless the existing pattern is clearly broken.",
+        impact: "medium",
+        score: 89,
+        any: &["existing patterns", "local helper", "new dependency", "small diff", "conventions"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "open-specified-file-first",
+        title: "Open the exact specified file first",
+        summary: "User frustration says agents do broad discovery when the user gave a direct file path or live skill path.",
+        permanent_fix: "For direct-path tasks, inspect the named file first and only broaden discovery when that file requires it.",
+        impact: "medium",
+        score: 88,
+        any: &["exact file path", "direct-path", "open that file first", "specified file"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "avoid-wrong-scope-research",
+        title: "Keep research scoped to the asked surface",
+        summary: "User frustration says agents wander into adjacent skills, repos, or historical artifacts that do not govern the current task.",
+        permanent_fix: "Use the loaded skill or repo instructions as the boundary, then expand only when the active file or failing command points there.",
+        impact: "medium",
+        score: 87,
+        any: &["wrong scope", "sibling skills", "unrelated", "broad scan", "scope"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "surface-what-can-be-fixed",
+        title: "Separate fixable friction from background history",
+        summary: "User frustration says fixed, retired, codified, or merely monitored history crowds out work the agent can actually improve.",
+        permanent_fix: "Primary friction views should prioritize active fix candidates and keep background statuses secondary.",
+        impact: "high",
+        score: 86,
+        any: &["fixed", "retired", "codified", "monitoring", "can fix"],
+        all: &["friction"],
+    },
+    UserProseFrictionSpec {
+        id: "verify-installed-cli-after-build",
+        title: "Promote and verify the installed CLI after build",
+        summary: "User frustration says repository tests pass but the command on PATH still runs old behavior.",
+        permanent_fix: "After building CLI changes, install or copy the binary used by PATH and rerun the user-facing command.",
+        impact: "high",
+        score: 85,
+        any: &["on path", "path still", "installed cli", "cargo install", "munin.exe"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "handle-scheduler-environment-drift",
+        title: "Check scheduled-task environments for drift",
+        summary: "User frustration says automation works in an interactive shell but fails under the scheduler environment.",
+        permanent_fix: "Inspect the scheduled task action, env paths, cache paths, and last result before trusting an interactive success.",
+        impact: "medium",
+        score: 84,
+        any: &["task scheduler", "scheduled", "lasttaskresult", "interactive shell", "wrong-environment"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "preserve-customer-progress-links",
+        title: "Persist progress links across handoff",
+        summary: "User frustration says progress is trapped in the browser instead of a durable link that survives email or device handoff.",
+        permanent_fix: "Persist status server-side and return stable request, token, and preview links for handoff workflows.",
+        impact: "medium",
+        score: 83,
+        any: &["progress link", "status token", "requestid", "handoff", "email/device", "builderurl"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "finish-with-concrete-impact",
+        title: "Report what changed in user-impact terms",
+        summary: "User frustration says final answers omit what the fix now does, what it can do, and the practical impact.",
+        permanent_fix: "After technical evidence, include a compact user-impact explanation of the build or fix.",
+        impact: "medium",
+        score: 82,
+        any: &["what it can do", "impact of change", "layman summary", "user impact", "product impact"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "avoid-returning-mid-loop",
+        title: "Keep looping on long-running tasks until terminal evidence",
+        summary: "User frustration says agents return progress summaries in the middle of a polling or keep-going instruction.",
+        permanent_fix: "For poll, keep-going, until-done, or infinite-task instructions, check, act, and check again until solved or concretely blocked.",
+        impact: "high",
+        score: 81,
+        any: &["polling contract", "between cycles", "keep going", "until done", "infinite task"],
+        all: &[],
+    },
+    UserProseFrictionSpec {
+        id: "turn-frustration-into-rules",
+        title: "Turn repeated frustration into durable rules",
+        summary: "User frustration says recurring corrections stay as vague memory instead of becoming actionable agent behavior.",
+        permanent_fix: "Promote repeated personal-frustration patterns into explicit rules, tests, or ranked fix candidates.",
+        impact: "high",
+        score: 80,
+        any: &["recurring", "keeps happening", "codified", "rule", "actual friction", "personal frustration"],
+        all: &[],
+    },
+];
+
+fn user_prose_actionable_friction_fixes(
+    checkpoints: &[MemoryOsCheckpointEnvelope],
+    durable_fixes: &UserProseDurableFixes,
+    now: DateTime<Utc>,
+) -> Vec<crate::core::memory_os::MemoryOsFrictionFix> {
+    let mut matched: BTreeMap<
+        &'static str,
+        (
+            &'static UserProseFrictionSpec,
+            HashSet<String>,
+            Option<DateTime<Utc>>,
+            Vec<String>,
+        ),
+    > = BTreeMap::new();
+
+    for checkpoint in checkpoints
+        .iter()
+        .filter(|checkpoint| checkpoint.capture.profile == "session-onboarding")
+    {
+        let signal_at = checkpoint_original_signal_time(checkpoint);
+        for text in checkpoint_user_prose(checkpoint) {
+            let lowered = text.to_ascii_lowercase();
+            if checkpoint_summary_is_command_or_build_noise(&lowered)
+                || user_prose_friction_text_is_instruction_payload(&lowered)
+            {
+                continue;
+            }
+            for spec in USER_PROSE_ACTIONABLE_FRICTION_SPECS {
+                if !user_prose_matches_spec(&lowered, spec) {
+                    continue;
+                }
+                let entry =
+                    matched
+                        .entry(spec.id)
+                        .or_insert((spec, HashSet::new(), None, Vec::new()));
+                let signal_key = compact_display_text(text, 220).to_ascii_lowercase();
+                if !entry.1.insert(signal_key) {
+                    continue;
+                }
+                counts_latest_at(&mut entry.2, signal_at);
+                push_unique_string(
+                    &mut entry.3,
+                    format!(
+                        "user signal at {}: {}",
+                        checkpoint.capture.generated_at,
+                        compact_display_text(text, 140)
+                    ),
+                );
+            }
+        }
+    }
+
+    let mut fixes = matched
+        .into_values()
+        .filter_map(|(spec, signal_keys, latest_at, mut evidence)| {
+            let count = signal_keys.len();
+            if count < 2 {
+                return None;
+            }
+            let status =
+                user_prose_actionable_friction_status(spec.id, latest_at, durable_fixes, now);
+            if status != "active" {
+                return None;
+            }
+            if let Some(durable) = user_prose_actionable_durable_fix(spec.id, durable_fixes) {
+                evidence.push(format!(
+                    "newer user signal exists after durable rule in {} at {}",
+                    durable.path,
+                    durable.codified_at.to_rfc3339()
+                ));
+            }
+            Some(crate::core::memory_os::MemoryOsFrictionFix {
+                fix_id: format!("friction:user-prose:{}", spec.id),
+                title: spec.title.to_string(),
+                impact: spec.impact.to_string(),
+                status,
+                summary: format!(
+                    "{} Matched {} user-frustration signal(s).",
+                    spec.summary, count
+                ),
+                permanent_fix: spec.permanent_fix.to_string(),
+                evidence: evidence.into_iter().take(3).collect(),
+                last_signal_at: latest_at.map(|value| value.to_rfc3339()),
+                score: spec.score + count.min(25) as i64,
+            })
+        })
+        .collect::<Vec<_>>();
+    fixes.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then(left.title.cmp(&right.title))
+    });
+    fixes
+}
+
+fn user_prose_actionable_friction_status(
+    spec_id: &str,
+    latest_at: Option<DateTime<Utc>>,
+    durable_fixes: &UserProseDurableFixes,
+    now: DateTime<Utc>,
+) -> String {
+    user_prose_actionable_durable_fix(spec_id, durable_fixes)
+        .map(|durable| durable_friction_status(latest_at, Some(durable), now))
+        .unwrap_or_else(|| "active".to_string())
+}
+
+fn user_prose_actionable_durable_fix<'a>(
+    spec_id: &str,
+    durable_fixes: &'a UserProseDurableFixes,
+) -> Option<&'a DurableFrictionFixEvidence> {
+    match spec_id {
+        "do-not-overask-permission" | "avoid-returning-mid-loop" => durable_fixes
+            .autonomy_polling
+            .as_ref()
+            .or(durable_fixes.codex_autonomy_polling.as_ref()),
+        "surface-useful-friction" | "surface-what-can-be-fixed" => {
+            durable_fixes.command_noise_surface_policy.as_ref()
+        }
+        _ => None,
+    }
+}
+
+fn user_prose_matches_spec(lowered: &str, spec: &UserProseFrictionSpec) -> bool {
+    spec.any.iter().any(|needle| lowered.contains(needle))
+        && spec.all.iter().all(|needle| lowered.contains(needle))
+}
+
+fn user_prose_friction_text_is_instruction_payload(lowered: &str) -> bool {
+    lowered.contains("base directory for this skill:")
+        || lowered.contains("<scheduled-task")
+        || lowered.starts_with("read-only review.")
+        || lowered.contains("read-only review task")
+        || lowered.contains("read-only final review")
+        || lowered.contains("do not edit files. workspace:")
+        || lowered.starts_with("you are ")
+        || lowered.starts_with("you are the critic in")
+        || lowered.starts_with("you are the architect in")
+        || lowered.starts_with("you are the planner in")
+        || lowered.starts_with("munin-morning.")
+        || lowered.contains("<skill>")
+        || lowered.contains("# agents.md instructions")
+        || lowered.contains("<environment_context>")
+        || lowered.contains("you are an autonomous coding agent")
+        || lowered.contains("codex global contract")
 }
 
 pub(super) fn build_memory_os_new_unproven_friction(
@@ -1375,6 +1832,143 @@ mod tests {
             !codified.iter().any(|rec| rec.change.contains("polling")),
             "durably codified polling rules should stop surfacing as behavior changes"
         );
+    }
+
+    #[test]
+    fn user_prose_friction_surfaces_twenty_active_fixable_points() {
+        let prompts = [
+            "please pick up exactly where it left off from the last proven checkpoint",
+            "the real pipeline is broken; fix it end to end",
+            "verify the live runtime and installed binary, not just source code",
+            "munin friction is broken, nothing appears despite personal frustration",
+            "memory is stale; refresh memory before answering",
+            "recall is empty, use session history and git history instead",
+            "customer-facing copy should not expose internal worker or queue terms",
+            "verify the frontend in the browser with a screenshot",
+            "repair this, not a report; make it useful",
+            "worktree is dirty, commit and remove the stale worktree",
+            "inspect CODEX_HOME and active config before editing config.toml",
+            "this Windows PowerShell path and node.exe shim handling is wrong",
+            "do not ask should I proceed on obvious next steps",
+            "explain this in laymans terms first",
+            "does it use firecrawl? answer the implementation-specific question",
+            "not done until the completion audit maps evidence to every requirement",
+            "daily proactivity is showing already fixed monitoring items",
+            "do not revert unrelated changes from the dirty checkout",
+            "follow existing patterns and do not add a new dependency",
+            "open that exact file path first before a broad scan",
+            "wrong scope research into sibling skills is the problem",
+            "progress link needs requestId status token and handoff URL",
+        ];
+        let checkpoints = prompts
+            .iter()
+            .enumerate()
+            .flat_map(|(index, prompt)| {
+                let day = index + 1;
+                [
+                    onboarding_checkpoint(
+                        &format!("2026-05-{day:02}T00:00:00Z"),
+                        &format!("2026-05-{day:02}T00:00:00Z"),
+                        prompt,
+                    ),
+                    onboarding_checkpoint(
+                        &format!("2026-05-{day:02}T00:01:00Z"),
+                        &format!("2026-05-{day:02}T00:01:00Z"),
+                        &format!("{prompt}; this keeps happening"),
+                    ),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let fixes = build_memory_os_friction_fixes(
+            &[],
+            &[],
+            &[],
+            &crate::core::memory_os::MemoryOsRedirectSummary::default(),
+            &checkpoints,
+            &UserProseDurableFixes::default(),
+        );
+        let active_user_prose = fixes
+            .iter()
+            .filter(|fix| {
+                fix.fix_id.starts_with("friction:user-prose:")
+                    && fix.status != "codified"
+                    && fix.status != "monitoring"
+                    && fix.status != "fixed"
+                    && fix.status != "retired"
+            })
+            .count();
+
+        assert!(
+            active_user_prose >= 20,
+            "expected at least 20 active user-prose friction fixes, got {active_user_prose}"
+        );
+    }
+
+    #[test]
+    fn user_prose_friction_ignores_embedded_instruction_payloads() {
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-01T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+                "You are the Architect in a ralplan workflow. verify the browser and worktree",
+            ),
+            onboarding_checkpoint(
+                "2026-05-02T00:00:00Z",
+                "2026-05-02T00:00:00Z",
+                "well then it is broken. I have so much friction in munin that is ready to action",
+            ),
+        ];
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &UserProseDurableFixes::default(),
+            Utc::now(),
+        );
+
+        assert!(fixes.is_empty());
+        assert!(!fixes.iter().any(|fix| {
+            fix.evidence
+                .iter()
+                .any(|line| line.contains("You are the Architect"))
+        }));
+    }
+
+    #[test]
+    fn user_prose_friction_suppresses_codex_global_autonomy_rules() {
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-01T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+                "do not ask should I proceed on obvious next steps",
+            ),
+            onboarding_checkpoint(
+                "2026-05-01T00:01:00Z",
+                "2026-05-01T00:01:00Z",
+                "do not ask should I proceed on obvious next steps; this keeps happening",
+            ),
+        ];
+        let durable_fixes = UserProseDurableFixes {
+            codex_autonomy_polling: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/.codex/AGENTS.md".to_string(),
+                codified_at: DateTime::parse_from_rfc3339("2026-05-02T00:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            }),
+            ..UserProseDurableFixes::default()
+        };
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &durable_fixes,
+            DateTime::parse_from_rfc3339("2026-05-03T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        );
+
+        assert!(!fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:do-not-overask-permission"));
     }
 
     #[test]
