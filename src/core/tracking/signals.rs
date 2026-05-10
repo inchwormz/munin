@@ -609,7 +609,14 @@ const USER_PROSE_ACTIONABLE_FRICTION_SPECS: &[UserProseFrictionSpec] = &[
         permanent_fix: "Recover the last proven checkpoint from memory, session logs, git state, or run artifacts before restarting the task.",
         impact: "high",
         score: 108,
-        any: &["pick up exactly where", "continue from", "last proven checkpoint", "where it left off", "resume"],
+        any: &[
+            "pick up exactly where",
+            "continue from",
+            "last proven checkpoint",
+            "where it left off",
+            "resume from",
+            "resume exactly",
+        ],
         all: &[],
     },
     UserProseFrictionSpec {
@@ -1044,6 +1051,7 @@ fn user_prose_friction_text_is_instruction_payload(lowered: &str) -> bool {
         || lowered.contains("<subagent_notification>")
         || lowered.contains("<local-command-stdout>")
         || lowered.contains("<scheduled-task")
+        || user_prose_friction_text_is_operational_review_prompt(lowered)
         || lowered.starts_with("read-only review.")
         || lowered.contains("read-only review task")
         || lowered.contains("read-only final review")
@@ -1058,6 +1066,22 @@ fn user_prose_friction_text_is_instruction_payload(lowered: &str) -> bool {
         || lowered.contains("<environment_context>")
         || lowered.contains("you are an autonomous coding agent")
         || lowered.contains("codex global contract")
+}
+
+fn user_prose_friction_text_is_operational_review_prompt(lowered: &str) -> bool {
+    let is_read_only_prompt = lowered.contains("read-only") || lowered.contains("read only");
+    let is_review_task = lowered.contains("audit")
+        || lowered.contains("sweep")
+        || lowered.contains("review")
+        || lowered.contains("bug hunt")
+        || lowered.contains("verification");
+    let has_operational_guard = lowered.contains("do not edit files") && is_review_task;
+
+    (is_read_only_prompt && is_review_task)
+        || has_operational_guard
+        || lowered.starts_with("post-fix clean sweep")
+        || lowered.starts_with("clone-speed clean verification sweep")
+        || lowered.starts_with("clone-speed runtime verification sweep")
 }
 
 pub(super) fn build_memory_os_new_unproven_friction(
@@ -2077,6 +2101,135 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("You are the Architect"))
         }));
+    }
+
+    #[test]
+    fn user_prose_friction_ignores_read_only_verification_sweep_prompts() {
+        let codified_at = DateTime::parse_from_rfc3339("2026-05-10T19:49:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let durable_fixes = UserProseDurableFixes {
+            checkpoint_resume: Some(DurableFrictionFixEvidence {
+                path: "C:/Users/OEM/Projects/AGENTS.md".to_string(),
+                codified_at,
+            }),
+            ..UserProseDurableFixes::default()
+        };
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-10T20:00:29Z",
+                "2026-05-10T20:00:29Z",
+                "Clone-speed clean verification sweep 1, lane 2: read-only orchestration/runtime review of current workspace under C:\\Users\\OEM\\Projects. Focus on last proven checkpoint behavior. Do not edit files.",
+            ),
+            onboarding_checkpoint(
+                "2026-05-10T20:01:29Z",
+                "2026-05-10T20:01:29Z",
+                "Clone-speed runtime verification sweep A, lane 2: inspect CLI/process/filesystem orchestration and resume from the last proven checkpoint path under C:\\Users\\OEM\\Projects.",
+            ),
+        ];
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &durable_fixes,
+            codified_at + Duration::hours(1),
+        );
+
+        assert!(
+            !fixes
+                .iter()
+                .any(|fix| fix.fix_id == "friction:user-prose:resume-from-last-checkpoint"),
+            "delegated verification sweep prompts should not revive codified checkpoint-resume friction"
+        );
+    }
+
+    #[test]
+    fn checkpoint_resume_friction_does_not_match_bare_resume_language() {
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-01T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+                "Resume create-native-template tradie lane",
+            ),
+            onboarding_checkpoint(
+                "2026-05-01T00:01:00Z",
+                "2026-05-01T00:01:00Z",
+                "Resume the template proof run later",
+            ),
+        ];
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &UserProseDurableFixes::default(),
+            Utc::now(),
+        );
+
+        assert!(!fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:resume-from-last-checkpoint"));
+    }
+
+    #[test]
+    fn checkpoint_resume_friction_keeps_real_verification_sweep_complaints() {
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-01T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+                "the verification sweep keeps restarting instead of resuming from the last proven checkpoint",
+            ),
+            onboarding_checkpoint(
+                "2026-05-01T00:01:00Z",
+                "2026-05-01T00:01:00Z",
+                "the verification sweep keeps restarting instead of resuming from the last proven checkpoint; this keeps happening",
+            ),
+        ];
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &UserProseDurableFixes::default(),
+            Utc::now(),
+        );
+
+        assert!(fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:resume-from-last-checkpoint"));
+    }
+
+    #[test]
+    fn checkpoint_resume_friction_keeps_real_verification_lane_complaints() {
+        let checkpoints = vec![
+            onboarding_checkpoint(
+                "2026-05-01T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+                "the verification lane keeps restarting instead of resuming from the last proven checkpoint",
+            ),
+            onboarding_checkpoint(
+                "2026-05-01T00:01:00Z",
+                "2026-05-01T00:01:00Z",
+                "the verification lane keeps restarting instead of resuming from the last proven checkpoint; this keeps happening",
+            ),
+        ];
+
+        let fixes = user_prose_actionable_friction_fixes(
+            &checkpoints,
+            &UserProseDurableFixes::default(),
+            Utc::now(),
+        );
+
+        assert!(fixes
+            .iter()
+            .any(|fix| fix.fix_id == "friction:user-prose:resume-from-last-checkpoint"));
+    }
+
+    #[test]
+    fn instruction_payload_filter_keeps_do_not_edit_user_corrections() {
+        assert!(!user_prose_friction_text_is_instruction_payload(
+            "i said do not edit files and you edited anyway"
+        ));
+        assert!(user_prose_friction_text_is_instruction_payload(
+            "Read-only review task. Do not edit files. Workspace: C:\\Users\\OEM\\Projects"
+                .to_ascii_lowercase()
+                .as_str()
+        ));
     }
 
     #[test]
