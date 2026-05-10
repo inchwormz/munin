@@ -217,6 +217,8 @@ enum MemoryOsCommands {
     Ingest {
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        check_now: bool,
         #[arg(short, long, default_value = "text")]
         format: String,
     },
@@ -1152,7 +1154,11 @@ fn session_brain_source_is_release_safe(source_status: &str) -> bool {
 
 fn run_memory_os(command: MemoryOsCommands, verbose: u8) -> Result<i32> {
     match command {
-        MemoryOsCommands::Ingest { force, format } => run_memory_os_ingest(force, &format)?,
+        MemoryOsCommands::Ingest {
+            force,
+            check_now,
+            format,
+        } => run_memory_os_ingest(force, check_now, &format)?,
         MemoryOsCommands::Brief {
             scope,
             project,
@@ -1220,12 +1226,16 @@ fn run_memory_os(command: MemoryOsCommands, verbose: u8) -> Result<i32> {
     Ok(0)
 }
 
-fn run_memory_os_ingest(force: bool, format: &str) -> Result<()> {
+fn run_memory_os_ingest(force: bool, check_now: bool, format: &str) -> Result<()> {
     if !matches!(format, "text" | "json") {
         anyhow::bail!("unsupported format `{format}`; expected text or json");
     }
     let started = std::time::Instant::now();
-    let report = analytics::session_backfill::ensure_memory_os_session_backfill_with_force(force)?;
+    let report = if check_now && !force {
+        analytics::session_backfill::ensure_memory_os_session_backfill_check_now()?
+    } else {
+        analytics::session_backfill::ensure_memory_os_session_backfill_with_force(force)?
+    };
     let elapsed = started.elapsed();
     let elapsed_ms = elapsed.as_millis();
     match format {
@@ -1235,6 +1245,7 @@ fn run_memory_os_ingest(force: bool, format: &str) -> Result<()> {
                 serde_json::to_string_pretty(&serde_json::json!({
                     "status": if report.is_some() { "imported" } else { "current" },
                     "force": force,
+                    "check_now": check_now,
                     "elapsed_ms": elapsed_ms,
                     "sessions_processed": report.as_ref().map(|report| report.sessions_processed).unwrap_or(0),
                     "shells_ingested": report.as_ref().map(|report| report.shells_ingested).unwrap_or(0),
@@ -1251,6 +1262,8 @@ fn run_memory_os_ingest(force: bool, format: &str) -> Result<()> {
                 "Mode: {}",
                 if force {
                     "forced replay"
+                } else if check_now {
+                    "incremental check now"
                 } else {
                     "incremental"
                 }
@@ -1574,7 +1587,7 @@ fn run_install(options: InstallOptions) -> Result<()> {
             "Codex",
         )?;
         let plugin_root = codex_home.join("plugins").join("munin-memory");
-        writes += install_codex_plugin(&plugin_root, options.force, options.dry_run)?;
+        writes += install_codex_plugin(&codex_home, &plugin_root, options.force, options.dry_run)?;
     }
 
     if options.dry_run {
@@ -2093,6 +2106,13 @@ fn render_node_hook_command(node_bin: &Path, hook_path: &Path) -> String {
     )
 }
 
+fn render_munin_ingest_hook_command(munin_bin: &Path) -> String {
+    format!(
+        "{} memory-os ingest --check-now --format json",
+        quote_command_path(munin_bin)
+    )
+}
+
 fn resolve_node_binary() -> Result<PathBuf> {
     core::utils::resolve_binary("node").context("failed to resolve node executable for hooks")
 }
@@ -2205,14 +2225,85 @@ fn entry_contains_munin_session_start_hook(entry: &serde_json::Value) -> bool {
         .get("hooks")
         .and_then(|value| value.as_array())
         .map(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(|value| value.as_str())
-                    .map(|existing| existing.contains("munin-session-start.js"))
-                    .unwrap_or(false)
-            })
+            hooks
+                .iter()
+                .any(|hook| hook_is_munin_session_start_hook(hook))
         })
         .unwrap_or(false)
+}
+
+fn hook_is_munin_session_start_hook(hook: &serde_json::Value) -> bool {
+    let command = hook
+        .get("command")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let status = hook
+        .get("statusMessage")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let command_lower = command.to_ascii_lowercase();
+    command.contains("munin-session-start.js")
+        || (command_lower.contains("memory-os ingest") && command_lower.contains("munin"))
+        || status.contains("Munin Memory OS session import")
+}
+
+fn upsert_codex_native_session_start_hook(
+    hooks_config: &mut serde_json::Value,
+    command: &str,
+) -> bool {
+    if !hooks_config.is_object() {
+        *hooks_config = serde_json::json!({});
+    }
+    let root = hooks_config
+        .as_object_mut()
+        .expect("object after normalization");
+    let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
+    if !hooks.is_object() {
+        *hooks = serde_json::json!({});
+    }
+    let hooks_obj = hooks.as_object_mut().expect("hooks object");
+    let entries = hooks_obj
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]));
+    if !entries.is_array() {
+        *entries = serde_json::json!([]);
+    }
+    let entries_array = entries.as_array_mut().expect("entries array");
+    let before = serde_json::Value::Array(entries_array.clone());
+
+    let mut retained_entries = Vec::with_capacity(entries_array.len());
+    for mut entry in entries_array.drain(..) {
+        let Some(entry_hooks) = entry
+            .get_mut("hooks")
+            .and_then(|value| value.as_array_mut())
+        else {
+            retained_entries.push(entry);
+            continue;
+        };
+
+        entry_hooks.retain(|hook| !hook_is_munin_session_start_hook(hook));
+        if !entry_hooks.is_empty() {
+            retained_entries.push(entry);
+        }
+    }
+
+    retained_entries.insert(
+        0,
+        serde_json::json!({
+            "matcher": "startup|resume|clear",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": 120,
+                    "statusMessage": "Refreshing Munin Memory OS session import"
+                }
+            ]
+        }),
+    );
+    *entries_array = retained_entries;
+
+    before != serde_json::Value::Array(entries_array.clone())
 }
 
 fn prune_legacy_context_user_prompt_hooks(entries: &mut Vec<serde_json::Value>) -> bool {
@@ -2306,36 +2397,24 @@ fn archive_legacy_skills(root: &Path, force: bool, dry_run: bool, label: &str) -
     Ok(archived)
 }
 
-fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Result<usize> {
+fn install_codex_plugin(
+    codex_home: &Path,
+    plugin_root: &Path,
+    force: bool,
+    dry_run: bool,
+) -> Result<usize> {
     let mut writes = 0usize;
     let munin_bin =
         std::env::current_exe().context("failed to resolve current munin executable")?;
-    let node_bin = resolve_node_binary()?;
     let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
     let plugin_manifest = render_codex_plugin_json();
     if write_installer_file(&manifest_path, &plugin_manifest, force, dry_run)? {
         writes += 1;
         println!("Codex plugin: {}", manifest_path.display());
     }
-    let session_start_hook_path = plugin_root.join("hooks").join("munin-session-start.js");
-    let session_start_hook_body = render_js_hook_with_munin_bin(
-        include_str!("../assets/integrations/v1/shared/munin-session-start.js"),
-        &munin_bin,
-    )?;
-    if write_installer_file(
-        &session_start_hook_path,
-        &session_start_hook_body,
-        force,
-        dry_run,
-    )? {
+    writes += remove_stale_codex_plugin_hooks(plugin_root, dry_run)?;
+    if install_codex_native_hooks(codex_home, &munin_bin, dry_run)? {
         writes += 1;
-        println!("Codex plugin hook: {}", session_start_hook_path.display());
-    }
-    let hooks_path = plugin_root.join("hooks").join("hooks.json");
-    let hooks_json = render_codex_hooks_json(&session_start_hook_path, &node_bin)?;
-    if write_installer_file(&hooks_path, &hooks_json, force, dry_run)? {
-        writes += 1;
-        println!("Codex plugin hooks: {}", hooks_path.display());
     }
     let umbrella = core::access_layer::intent_rules::UMBRELLA_SKILL;
     let path = plugin_root
@@ -2382,6 +2461,56 @@ fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Resul
         }
     }
     Ok(writes)
+}
+
+fn install_codex_native_hooks(codex_home: &Path, munin_bin: &Path, dry_run: bool) -> Result<bool> {
+    let hooks_path = codex_home.join("hooks.json");
+    let mut hooks_config = if hooks_path.exists() {
+        let content = fs::read_to_string(&hooks_path)
+            .with_context(|| format!("failed to read {}", hooks_path.display()))?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .with_context(|| format!("failed to parse {}", hooks_path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+    let command = render_munin_ingest_hook_command(munin_bin);
+    if !upsert_codex_native_session_start_hook(&mut hooks_config, &command) {
+        return Ok(false);
+    }
+    if dry_run {
+        println!("would update Codex native hooks: {}", hooks_path.display());
+    } else {
+        if let Some(parent) = hooks_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(&hooks_path, serde_json::to_string_pretty(&hooks_config)?)
+            .with_context(|| format!("failed to write {}", hooks_path.display()))?;
+        println!("Codex native hooks: {}", hooks_path.display());
+    }
+    Ok(true)
+}
+
+fn remove_stale_codex_plugin_hooks(plugin_root: &Path, dry_run: bool) -> Result<usize> {
+    let stale_files = [
+        plugin_root.join("hooks").join("hooks.json"),
+        plugin_root.join("hooks").join("munin-session-start.js"),
+    ];
+    let mut removed = 0usize;
+    for path in stale_files {
+        if !path.exists() {
+            continue;
+        }
+        removed += 1;
+        if dry_run {
+            println!("would remove stale Codex plugin hook: {}", path.display());
+        } else {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+            println!("removed stale Codex plugin hook: {}", path.display());
+        }
+    }
+    Ok(removed)
 }
 
 fn write_installer_file(path: &Path, content: &str, force: bool, dry_run: bool) -> Result<bool> {
@@ -2531,27 +2660,6 @@ fn render_codex_plugin_json() -> String {
         .replace("__MUNIN_VERSION__", env!("CARGO_PKG_VERSION"))
 }
 
-fn render_codex_hooks_json(session_start_hook_path: &Path, node_bin: &Path) -> Result<String> {
-    let command = render_node_hook_command(node_bin, session_start_hook_path);
-    let hooks = serde_json::json!({
-        "hooks": {
-            "SessionStart": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": command,
-                            "timeout": 120,
-                            "statusMessage": "Refreshing Munin Memory OS session import"
-                        }
-                    ]
-                }
-            ]
-        }
-    });
-    serde_json::to_string_pretty(&hooks).context("failed to render Codex hooks JSON")
-}
-
 fn validate_integration_asset_bundle() -> Result<usize> {
     let manifest_text = include_str!("../assets/integrations/v1/manifest.json");
     let manifest: serde_json::Value = serde_json::from_str(manifest_text)
@@ -2592,22 +2700,18 @@ fn validate_integration_asset_bundle() -> Result<usize> {
     if contains_forbidden_context_runtime_reference(&plugin_text) {
         anyhow::bail!("rendered codex plugin manifest still contains a Context runtime reference");
     }
-    if plugin_json.get("hooks").and_then(|value| value.as_str()) != Some("./hooks/hooks.json") {
-        anyhow::bail!("rendered codex plugin manifest does not declare lifecycle hooks");
+    if plugin_json.get("hooks").is_some() {
+        anyhow::bail!("rendered codex plugin manifest still declares plugin-local lifecycle hooks");
     }
-    let codex_hooks_text = render_codex_hooks_json(
-        Path::new("C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js"),
-        Path::new("C:/Program Files/nodejs/node.exe"),
-    )?;
-    let codex_hooks_json: serde_json::Value = serde_json::from_str(&codex_hooks_text)
-        .context("failed to parse rendered codex hooks JSON")?;
+    let mut codex_hooks_json = serde_json::json!({});
+    let command = render_munin_ingest_hook_command(Path::new("C:/Users/OEM/bin/munin.exe"));
+    upsert_codex_native_session_start_hook(&mut codex_hooks_json, &command);
     if codex_hooks_json
         .pointer("/hooks/SessionStart/0/hooks/0/command")
         .and_then(|value| value.as_str())
-        .map(|command| command.contains("munin-session-start.js"))
-        != Some(true)
+        != Some("\"C:/Users/OEM/bin/munin.exe\" memory-os ingest --check-now --format json")
     {
-        anyhow::bail!("rendered codex hooks JSON does not invoke the Munin session-start hook");
+        anyhow::bail!("rendered codex native hooks JSON does not invoke Munin directly");
     }
     let claude_hook = include_str!("../assets/integrations/v1/claude/munin-runtime.js");
     if !claude_hook.contains("'runtime'") || !claude_hook.contains("'--surface', 'auto'") {
@@ -2981,57 +3085,91 @@ mod tests {
     }
 
     #[test]
-    fn codex_plugin_declares_quiet_session_start_ingest_hook() {
+    fn codex_plugin_leaves_lifecycle_hooks_to_native_codex_config() {
         let plugin_json: serde_json::Value =
             serde_json::from_str(&render_codex_plugin_json()).expect("plugin json");
-        assert_eq!(
-            plugin_json.get("hooks").and_then(|value| value.as_str()),
-            Some("./hooks/hooks.json")
+        assert!(plugin_json.get("hooks").is_none());
+    }
+
+    #[test]
+    fn codex_native_hooks_run_munin_ingest_directly() {
+        let mut hooks_json = serde_json::json!({});
+        let changed = upsert_codex_native_session_start_hook(
+            &mut hooks_json,
+            &render_munin_ingest_hook_command(Path::new("C:/Users/OEM/bin/munin.exe")),
         );
 
-        let hooks_text = render_codex_hooks_json(
-            Path::new("C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js"),
-            Path::new("C:/Program Files/nodejs/node.exe"),
-        )
-        .expect("hooks json");
-        let hooks_json: serde_json::Value =
-            serde_json::from_str(&hooks_text).expect("hooks json parse");
-        assert!(hooks_json
-            .pointer("/hooks/SessionStart/0/matcher")
-            .is_none());
+        assert!(changed);
+        assert_eq!(
+            hooks_json
+                .pointer("/hooks/SessionStart/0/matcher")
+                .and_then(|value| value.as_str()),
+            Some("startup|resume|clear")
+        );
         assert_eq!(
             hooks_json
                 .pointer("/hooks/SessionStart/0/hooks/0/timeout")
                 .and_then(|value| value.as_i64()),
             Some(120)
         );
-        assert!(hooks_json
-            .pointer("/hooks/SessionStart/0/hooks/0/command")
-            .and_then(|value| value.as_str())
-            .expect("command")
-            .starts_with("\"C:/Program Files/nodejs/node.exe\" "));
-        assert!(hooks_json
-            .pointer("/hooks/SessionStart/0/hooks/0/command")
-            .and_then(|value| value.as_str())
-            .expect("command")
-            .contains("\"C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js\""));
-    }
-
-    #[test]
-    fn hook_commands_quote_paths_with_spaces() {
-        let hooks_text = render_codex_hooks_json(
-            Path::new("C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js"),
-            Path::new("C:/Program Files/nodejs/node.exe"),
-        )
-        .expect("hooks json");
-        let hooks_json: serde_json::Value =
-            serde_json::from_str(&hooks_text).expect("hooks json parse");
         assert_eq!(
             hooks_json
                 .pointer("/hooks/SessionStart/0/hooks/0/command")
                 .and_then(|value| value.as_str()),
-            Some("\"C:/Program Files/nodejs/node.exe\" \"C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js\"")
+            Some("\"C:/Users/OEM/bin/munin.exe\" memory-os ingest --check-now --format json")
         );
+        assert!(!serde_json::to_string(&hooks_json)
+            .expect("hooks json")
+            .contains("munin-session-start.js"));
+    }
+
+    #[test]
+    fn codex_native_hooks_prune_old_munin_plugin_hooks_and_preserve_other_hooks() {
+        let mut hooks_json = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js\"",
+                                "timeout": 120
+                            }
+                        ]
+                    },
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python C:/Users/OEM/.codex/hooks/other.py"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let changed = upsert_codex_native_session_start_hook(
+            &mut hooks_json,
+            &render_munin_ingest_hook_command(Path::new("C:/Program Files/Munin/munin.exe")),
+        );
+
+        assert!(changed);
+        assert_eq!(
+            hooks_json
+                .pointer("/hooks/SessionStart/0/hooks/0/command")
+                .and_then(|value| value.as_str()),
+            Some("\"C:/Program Files/Munin/munin.exe\" memory-os ingest --check-now --format json")
+        );
+        assert_eq!(
+            hooks_json
+                .pointer("/hooks/SessionStart/1/hooks/0/command")
+                .and_then(|value| value.as_str()),
+            Some("python C:/Users/OEM/.codex/hooks/other.py")
+        );
+        assert!(!serde_json::to_string(&hooks_json)
+            .expect("hooks json")
+            .contains("munin-session-start.js"));
     }
 
     #[test]
@@ -3095,6 +3233,7 @@ mod tests {
         parse_ok(&["munin", "memory-os", "brief"]);
         parse_ok(&["munin", "memory-os", "ingest"]);
         parse_ok(&["munin", "memory-os", "ingest", "--force"]);
+        parse_ok(&["munin", "memory-os", "ingest", "--check-now"]);
         parse_ok(&["munin", "memory-os", "ingest", "--format", "json"]);
         parse_ok(&["munin", "memory-os", "overview"]);
         parse_ok(&["munin", "memory-os", "doctor"]);
