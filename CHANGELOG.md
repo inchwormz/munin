@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.13 - 2026-05-10
+
+### Added
+
+- `munin recall --format json` now attaches a structured session summary to
+  recall matches so agents can recover what happened in each matching session
+  without rereading raw transcript turns.
+- Session summaries now include exactly five concise bullet points plus summary
+  quality metadata and command counts, keeping recall output compact while still
+  covering intent, implementation, verification, blockers, and next steps.
+
+### Fixed
+
+- Recall session summaries now suppress copied prompts, wrapper tags, transient
+  path dumps, and low-signal handoff text so human-facing memory stays focused
+  on useful session outcomes instead of shell/build noise.
+
 ## 0.5.11 - 2026-04-24
 
 ### Fixed
