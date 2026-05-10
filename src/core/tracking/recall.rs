@@ -2,9 +2,12 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::Value;
+use std::collections::HashSet;
 
 use super::{resolved_project_path, Tracker};
 use crate::core::utils::truncate;
+
+const SESSION_SUMMARY_RECALL_MAX_CHARS: usize = 1600;
 
 impl Tracker {
     pub fn get_memory_os_recall_report(
@@ -88,7 +91,12 @@ impl Tracker {
                         0
                     };
                 let score = base_score + (overlap as i64 * 12) + project_score + recency_score;
-                let answer = truncate(text.trim(), 360);
+                let max_answer_chars = if source_kind == "session-summary" {
+                    SESSION_SUMMARY_RECALL_MAX_CHARS
+                } else {
+                    360
+                };
+                let answer = truncate(text.trim(), max_answer_chars);
                 let title = title_from_text(&answer);
                 matches.push(crate::core::memory_os::MemoryOsRecallMatch {
                     title,
@@ -158,9 +166,24 @@ impl Tracker {
                 .score
                 .cmp(&left.score)
                 .then(left.title.cmp(&right.title))
+                .then(right.source_ref.cmp(&left.source_ref))
         });
         matches.dedup_by(|left, right| {
             left.answer == right.answer && left.source_ref == right.source_ref
+        });
+        let mut seen_session_summaries = HashSet::new();
+        matches.retain(|item| {
+            if item.source_kind != "session-summary" {
+                return true;
+            }
+            let Some(session_id) = item
+                .evidence
+                .iter()
+                .find_map(|line| line.strip_prefix("session-id:"))
+            else {
+                return true;
+            };
+            seen_session_summaries.insert(format!("{}:{}", item.project_path, session_id))
         });
         matches.truncate(5);
         let no_match_reason = if matches.is_empty() {
@@ -295,6 +318,113 @@ mod tests {
         assert!(!report.matches.is_empty());
         assert!(report.matches[0].answer.contains("Resolver"));
         assert!(report.no_match_reason.is_none());
+    }
+
+    #[test]
+    fn recall_returns_attached_session_summary_bullets() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&tmp.path().join("history.db")).expect("tracker");
+        let mut capture = capture("Unrelated checkpoint about packaging.");
+        capture.packet_id = "packet-session-summary".to_string();
+        capture.selected_items = vec![MemoryOsPacketSelection {
+            section: "session_summary".to_string(),
+            kind: "session-summary".to_string(),
+            summary: [
+                "- Session summary: codex session `abc` for `C:/repo` started 2026-04-18T00:00:00Z.",
+                "- User asked first: build a comprehensive session summary tool within Munin that preserves the real user ask, project, source, command results, corrections, and handoff context for future recall.",
+                "- Latest user ask: attach the session summary output to Munin recall so historical sessions return a compact human-readable answer instead of raw transcript noise.",
+                "- Work performed: 4 command(s) captured, 3 succeeded, 1 failed, 0 had unknown outcome, and the failed command was represented as outcome metadata rather than raw build output.",
+                "- Important handoff: verify summary recall against current repo state before acting and keep exactly five bullet points visible in recall output.",
+            ]
+            .join("\n"),
+            token_estimate: 80,
+            score: 1800,
+            artifact_id: Some("session-summary:codex:abc".to_string()),
+            subject: Some("session-summary:codex:abc".to_string()),
+            provenance: vec!["session:codex".to_string()],
+        }];
+
+        insert_checkpoint(&tracker, "C:/repo", &capture);
+
+        let report = tracker
+            .get_memory_os_recall_report(
+                MemoryOsInspectionScope::User,
+                None,
+                "comprehensive session summary munin recall",
+            )
+            .expect("recall");
+
+        assert!(!report.matches.is_empty());
+        assert_eq!(report.matches[0].source_kind, "session-summary");
+        assert_eq!(
+            report.matches[0]
+                .answer
+                .lines()
+                .filter(|line| line.starts_with("- "))
+                .count(),
+            5
+        );
+        assert!(report.matches[0].answer.contains("Munin recall"));
+    }
+
+    #[test]
+    fn recall_dedupes_session_summaries_across_schema_versions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracker = Tracker::new_at_path(&tmp.path().join("history.db")).expect("tracker");
+        let mut old_capture = capture("Unrelated checkpoint about packaging.");
+        old_capture.packet_id = "onboarding-memory-os-session-onboarding-v13-codex-abc".to_string();
+        old_capture.selected_items = vec![MemoryOsPacketSelection {
+            section: "session_summary".to_string(),
+            kind: "session-summary".to_string(),
+            summary: [
+                "- Session summary: codex session `abc` for `C:/repo` started 2026-04-18T00:00:00Z.",
+                "- User asked first: duplicate session summary recall.",
+                "- Latest user ask: old schema still had noisy command output.",
+                "- Work performed: 1 command(s) captured, 1 succeeded, 0 failed, 0 had unknown outcome.",
+                "- Important handoff: the latest successful command was `context ls C:/repo/logs/*.log 2>&1`; rerun only after checking current state.",
+            ]
+            .join("\n"),
+            token_estimate: 80,
+            score: 1800,
+            artifact_id: Some("session-summary:codex:abc".to_string()),
+            subject: Some("session-summary:codex:abc".to_string()),
+            provenance: vec!["session:codex".to_string(), "session-id:abc".to_string()],
+        }];
+        let mut new_capture = old_capture.clone();
+        new_capture.packet_id = "onboarding-memory-os-session-onboarding-v14-codex-abc".to_string();
+        new_capture.selected_items[0].summary = [
+            "- Session summary: codex session `abc` for `C:/repo` started 2026-04-18T00:00:00Z.",
+            "- User asked first: duplicate session summary recall.",
+            "- Latest user ask: new schema keeps command noise compact.",
+            "- Work performed: 1 command(s) captured, 1 succeeded, 0 failed, 0 had unknown outcome.",
+            "- Important handoff: the latest successful command was `ls`; rerun only after checking current state.",
+        ]
+        .join("\n");
+
+        insert_checkpoint(&tracker, "C:/repo", &old_capture);
+        insert_checkpoint(&tracker, "C:/repo", &new_capture);
+
+        let report = tracker
+            .get_memory_os_recall_report(
+                MemoryOsInspectionScope::User,
+                None,
+                "duplicate session summary recall",
+            )
+            .expect("recall");
+
+        let session_summary_matches = report
+            .matches
+            .iter()
+            .filter(|item| item.source_kind == "session-summary")
+            .collect::<Vec<_>>();
+        assert_eq!(session_summary_matches.len(), 1);
+        assert!(session_summary_matches[0]
+            .source_ref
+            .contains("memory-os-session-onboarding-v14"));
+        assert!(session_summary_matches[0]
+            .answer
+            .contains("command noise compact"));
+        assert!(!session_summary_matches[0].answer.contains("logs/*.log"));
     }
 
     #[test]

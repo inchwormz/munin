@@ -3220,7 +3220,9 @@ fn render_recall_text(report: &crate::core::memory_os::MemoryOsRecallReport) {
     }
     for (index, item) in report.matches.iter().enumerate() {
         println!("{}. {}", index + 1, item.title);
-        println!("   {}", item.answer);
+        for line in item.answer.lines() {
+            println!("   {}", line);
+        }
         println!("   source: {} ({})", item.source_ref, item.source_kind);
         if !item.project_path.is_empty() {
             println!("   project: {}", item.project_path);

@@ -20,12 +20,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v11";
+const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v14";
 const ONBOARDING_STATE_FILE: &str = "memory_os_session_onboarding.json";
 const ONBOARDING_LOCK_DB_FILE: &str = "memory_os_session_onboarding.lock.sqlite";
 const INCREMENTAL_CHECK_INTERVAL_MINUTES: i64 = 15;
 const BACKFILL_LOCK_TIMEOUT_SECONDS: u64 = 120;
 const MAX_SEMANTIC_ITEMS_PER_SESSION: usize = 8;
+const SESSION_SUMMARY_BULLET_COUNT: usize = 5;
+const SESSION_SUMMARY_MAX_BULLET_CHARS: usize = 260;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct SessionBackfillState {
@@ -518,6 +520,7 @@ fn session_correction_occurrences(session: &SessionRecord) -> Vec<CorrectionOccu
 
 fn session_checkpoint_capture(session: &SessionRecord) -> MemoryOsCheckpointCapture {
     let mut selected_items = Vec::new();
+    let corrections = session_correction_occurrences(session);
     for shell in session
         .shells
         .iter()
@@ -537,7 +540,7 @@ fn session_checkpoint_capture(session: &SessionRecord) -> MemoryOsCheckpointCapt
         });
     }
 
-    for correction in session_correction_occurrences(session).iter().take(3) {
+    for correction in corrections.iter().take(3) {
         selected_items.push(MemoryOsPacketSelection {
             section: "open_obligations".to_string(),
             kind: "action-memory".to_string(),
@@ -579,6 +582,7 @@ fn session_checkpoint_capture(session: &SessionRecord) -> MemoryOsCheckpointCapt
     }
 
     selected_items.extend(session_semantic_items(session));
+    selected_items.push(session_summary_selection(session, &corrections));
 
     let last_successful_command = session
         .shells
@@ -586,7 +590,7 @@ fn session_checkpoint_capture(session: &SessionRecord) -> MemoryOsCheckpointCapt
         .rev()
         .find(|shell| shell.outcome.is_success())
         .map(|shell| shell.command.clone());
-    let recommended_command = session_correction_occurrences(session)
+    let recommended_command = corrections
         .last()
         .map(|correction| correction.pair.right_command.clone())
         .or(last_successful_command)
@@ -647,6 +651,256 @@ fn session_checkpoint_capture(session: &SessionRecord) -> MemoryOsCheckpointCapt
                     .to_string(),
         },
     }
+}
+
+fn session_summary_selection(
+    session: &SessionRecord,
+    corrections: &[CorrectionOccurrence],
+) -> MemoryOsPacketSelection {
+    let bullets = session_summary_bullets(session, corrections);
+    let summary = bullets.join("\n");
+    MemoryOsPacketSelection {
+        section: "session_summary".to_string(),
+        kind: "session-summary".to_string(),
+        summary: summary.clone(),
+        token_estimate: summary.split_whitespace().count().min(180),
+        score: 1800,
+        artifact_id: Some(format!(
+            "session-summary:{}:{}",
+            session.source.as_str(),
+            hash_text(&session.session_id)
+        )),
+        subject: Some(format!(
+            "session-summary:{}:{}",
+            session.source.as_str(),
+            session.session_id
+        )),
+        provenance: vec![
+            format!("session:{}", session.source.as_str()),
+            format!("session-id:{}", session.session_id),
+        ],
+    }
+}
+
+fn session_summary_bullets(
+    session: &SessionRecord,
+    corrections: &[CorrectionOccurrence],
+) -> Vec<String> {
+    let meaningful_prompts = session
+        .user_prompts
+        .iter()
+        .map(|prompt| prompt.text.trim())
+        .filter(|text| !text.is_empty() && !semantic_text_is_noise(text))
+        .collect::<Vec<_>>();
+    let first_prompt = meaningful_prompts.first().copied();
+    let last_prompt = meaningful_prompts.last().copied();
+    let shell_count = session.shells.len();
+    let success_count = session
+        .shells
+        .iter()
+        .filter(|shell| shell.outcome.is_success())
+        .count();
+    let failure_count = session
+        .shells
+        .iter()
+        .filter(|shell| shell.outcome.is_failure())
+        .count();
+    let unknown_count = shell_count.saturating_sub(success_count + failure_count);
+    let project = compact_semantic_summary(session.cwd.trim(), 120);
+    let mut bullets = Vec::new();
+
+    bullets.push(format!(
+        "Session summary: {} session `{}` for `{}` started {}.",
+        session.source.as_str(),
+        compact_semantic_summary(&session.session_id, 80),
+        if project.is_empty() {
+            "unknown project".to_string()
+        } else {
+            project
+        },
+        session.started_at.to_rfc3339()
+    ));
+
+    bullets.push(match first_prompt {
+        Some(prompt) => format!(
+            "User asked first: {}.",
+            sentence_for_session_summary(prompt)
+        ),
+        None => "User asked first: no direct user prompt was captured in this source session."
+            .to_string(),
+    });
+
+    bullets.push(match (first_prompt, last_prompt) {
+        (Some(first), Some(last)) if first != last => {
+            format!("Latest user ask: {}.", sentence_for_session_summary(last))
+        }
+        (Some(_), Some(_)) => format!(
+            "Prompt coverage: {} captured user prompt(s); the latest ask matches the first ask.",
+            meaningful_prompts.len()
+        ),
+        _ => format!(
+            "Prompt coverage: {} captured user prompt(s); use command activity for extra context.",
+            meaningful_prompts.len()
+        ),
+    });
+
+    bullets.push(format!(
+        "Work performed: {} command(s) captured, {} succeeded, {} failed, {} had unknown outcome.",
+        shell_count, success_count, failure_count, unknown_count
+    ));
+
+    bullets.push(session_summary_handoff(session, corrections));
+
+    while bullets.len() < SESSION_SUMMARY_BULLET_COUNT {
+        bullets.push(
+            "Recall handoff: verify this summary against current repo state before acting."
+                .to_string(),
+        );
+    }
+
+    bullets
+        .into_iter()
+        .take(SESSION_SUMMARY_BULLET_COUNT)
+        .map(|bullet| {
+            format!(
+                "- {}",
+                compact_semantic_summary(
+                    bullet.trim().trim_start_matches("- "),
+                    SESSION_SUMMARY_MAX_BULLET_CHARS
+                )
+            )
+        })
+        .collect()
+}
+
+fn session_summary_handoff(
+    session: &SessionRecord,
+    corrections: &[CorrectionOccurrence],
+) -> String {
+    if let Some(correction) = corrections.last() {
+        return format!(
+            "Important handoff: a correction replaced `{}` with `{}`; verify the corrected command before reuse.",
+            command_for_session_summary(&correction.pair.wrong_command),
+            command_for_session_summary(&correction.pair.right_command)
+        );
+    }
+
+    if let Some(shell) = session
+        .shells
+        .iter()
+        .rev()
+        .find(|shell| shell.outcome.is_failure())
+    {
+        return format!(
+            "Important handoff: the most recent failure involved `{}`; inspect current state before retrying.",
+            command_for_session_summary(&shell.command)
+        );
+    }
+
+    if let Some(shell) = session
+        .shells
+        .iter()
+        .rev()
+        .find(|shell| shell.outcome.is_success())
+    {
+        return format!(
+            "Important handoff: the latest successful command was `{}`; rerun only after checking current state.",
+            command_for_session_summary(&shell.command)
+        );
+    }
+
+    "Important handoff: no shell command evidence was captured; use the prompt summary as recall context."
+        .to_string()
+}
+
+fn sentence_for_session_summary(text: &str) -> String {
+    let compact = clean_prompt_for_session_summary(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = compact
+        .split(|ch: char| matches!(ch, '\n' | '\r'))
+        .next()
+        .unwrap_or(compact.as_str())
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches(['.', '?', '!']);
+    compact_semantic_summary(sentence, 180)
+}
+
+fn command_for_session_summary(command: &str) -> String {
+    let command = command.trim();
+    if command.contains("&&")
+        || command.contains('|')
+        || command.contains("2>&1")
+        || command.len() > 120
+    {
+        let normalized = normalize_replay_command(command);
+        let base = extract_base_command(&normalized);
+        if !base.trim().is_empty() {
+            if base.contains(':') || base.contains('/') || base.contains('\\') {
+                return normalized
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(base.as_str())
+                    .to_string();
+            }
+            return base;
+        }
+    }
+
+    let compact = command
+        .split_whitespace()
+        .take(10)
+        .collect::<Vec<_>>()
+        .join(" ");
+    compact_semantic_summary(&compact, 120)
+}
+
+fn clean_prompt_for_session_summary(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(command_args) = extract_tag_content(&compact, "command-args") {
+        return strip_angle_tags(&command_args);
+    }
+    let without_command_message = remove_tag_block(&compact, "command-message");
+    let without_command_name = remove_tag_block(&without_command_message, "command-name");
+    strip_angle_tags(&without_command_name)
+}
+
+fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
+    let start_tag = format!("<{}>", tag);
+    let end_tag = format!("</{}>", tag);
+    let start = text.find(&start_tag)? + start_tag.len();
+    let end = text[start..].find(&end_tag)? + start;
+    Some(text[start..end].trim().to_string())
+}
+
+fn remove_tag_block(text: &str, tag: &str) -> String {
+    let start_tag = format!("<{}>", tag);
+    let end_tag = format!("</{}>", tag);
+    let mut remaining = text.to_string();
+    while let Some(start) = remaining.find(&start_tag) {
+        let Some(end_offset) = remaining[start..].find(&end_tag) else {
+            break;
+        };
+        let end = start + end_offset + end_tag.len();
+        remaining.replace_range(start..end, "");
+    }
+    remaining
+}
+
+fn strip_angle_tags(text: &str) -> String {
+    let mut cleaned = String::new();
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => cleaned.push(ch),
+            _ => {}
+        }
+    }
+    cleaned.trim().to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -1187,6 +1441,74 @@ mod tests {
             .selected_items
             .iter()
             .any(|item| { item.section == "user_prompts" && item.summary == "Fix the CLI flow" }));
+        assert!(capture
+            .selected_items
+            .iter()
+            .any(|item| item.section == "session_summary" && item.kind == "session-summary"));
+    }
+
+    #[test]
+    fn session_checkpoint_capture_attaches_exactly_five_summary_bullets() {
+        let capture = session_checkpoint_capture(&sample_session());
+        let summary = capture
+            .selected_items
+            .iter()
+            .find(|item| item.kind == "session-summary")
+            .expect("session summary");
+
+        let bullet_lines = summary
+            .summary
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect::<Vec<_>>();
+
+        assert_eq!(bullet_lines.len(), 5);
+        assert!(summary.summary.split("\n\n").count() <= 5);
+        assert!(summary.summary.contains("Session summary: claude session"));
+        assert!(summary
+            .summary
+            .contains("Work performed: 2 command(s) captured"));
+        assert!(summary.summary.contains("git commit --amend"));
+        assert!(summary
+            .subject
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("session-summary:claude:session-001"));
+    }
+
+    #[test]
+    fn session_summary_removes_command_wrapper_and_long_shell_noise() {
+        let mut session = sample_session();
+        session.user_prompts = vec![UserPrompt {
+            timestamp: DateTime::parse_from_rfc3339("2026-04-10T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            text: "<command-message>plan-ceo-review</command-message> <command-name>/plan-ceo-review</command-name> <command-args>I think Munin memory needs session summaries attached to recall.</command-args>".to_string(),
+        }];
+        session.shells = vec![ShellExecution {
+            timestamp: DateTime::parse_from_rfc3339("2026-04-10T00:00:02Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            command:
+                "context ls C:/Users/OEM/Projects/sitesorted/watcher-v2/logs/sales-autopilot-*.log 2>&1"
+                    .to_string(),
+            output: "Done".to_string(),
+            outcome: CommandOutcome::Success,
+        }];
+
+        let capture = session_checkpoint_capture(&session);
+        let summary = capture
+            .selected_items
+            .iter()
+            .find(|item| item.kind == "session-summary")
+            .expect("session summary");
+
+        assert!(summary.summary.contains("I think Munin memory needs"));
+        assert!(!summary.summary.contains("command-message"));
+        assert!(!summary.summary.contains("sales-autopilot-*.log"));
+        assert!(summary
+            .summary
+            .contains("latest successful command was `ls`"));
     }
 
     #[test]
