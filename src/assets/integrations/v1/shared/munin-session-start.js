@@ -4,9 +4,10 @@
 // session starts, without replaying the full corpus and without injecting
 // command output into the model context.
 const { spawnSync } = require('node:child_process');
+const MUNIN_BIN = typeof __MUNIN_BIN_JSON__ === 'string' ? __MUNIN_BIN_JSON__ : 'munin';
 
 try {
-  spawnSync('munin', ['memory-os', 'ingest', '--format', 'json'], {
+  spawnSync(MUNIN_BIN, ['memory-os', 'ingest', '--format', 'json'], {
     env: {
       ...process.env,
       MUNIN_MEMORY_OS_FORCE_ONBOARDING: '1',

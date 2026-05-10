@@ -1049,7 +1049,7 @@ fn discover_codex_session_roots() -> Result<Vec<PathBuf>> {
     Ok(roots)
 }
 
-fn session_home_dir() -> Option<PathBuf> {
+pub(crate) fn session_home_dir() -> Option<PathBuf> {
     explicit_session_home_dir().or_else(dirs::home_dir)
 }
 

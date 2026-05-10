@@ -1987,9 +1987,14 @@ fn install_claude_commands_at(root: &Path, force: bool, dry_run: bool) -> Result
 
 fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Result<usize> {
     let mut writes = 0usize;
+    let munin_bin =
+        std::env::current_exe().context("failed to resolve current munin executable")?;
     let hook_path = home.join(".claude").join("hooks").join("munin-runtime.js");
-    let hook_body = include_str!("../assets/integrations/v1/claude/munin-runtime.js");
-    if write_installer_file(&hook_path, hook_body, force, dry_run)? {
+    let hook_body = render_js_hook_with_munin_bin(
+        include_str!("../assets/integrations/v1/claude/munin-runtime.js"),
+        &munin_bin,
+    )?;
+    if write_installer_file(&hook_path, &hook_body, force, dry_run)? {
         writes += 1;
         println!("Claude hook: {}", hook_path.display());
     }
@@ -1997,11 +2002,13 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
         .join(".claude")
         .join("hooks")
         .join("munin-session-start.js");
-    let session_start_hook_body =
-        include_str!("../assets/integrations/v1/shared/munin-session-start.js");
+    let session_start_hook_body = render_js_hook_with_munin_bin(
+        include_str!("../assets/integrations/v1/shared/munin-session-start.js"),
+        &munin_bin,
+    )?;
     if write_installer_file(
         &session_start_hook_path,
-        session_start_hook_body,
+        &session_start_hook_body,
         force,
         dry_run,
     )? {
@@ -2010,9 +2017,8 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
     }
 
     let settings_path = home.join(".claude").join("settings.json");
-    let command = format!("node {}", normalize_command_path(&hook_path));
-    let session_start_command =
-        format!("node {}", normalize_command_path(&session_start_hook_path));
+    let command = format!("node {}", quote_command_path(&hook_path));
+    let session_start_command = format!("node {}", quote_command_path(&session_start_hook_path));
     let mut settings = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .with_context(|| format!("failed to read {}", settings_path.display()))?;
@@ -2050,6 +2056,16 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
 
 fn normalize_command_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn quote_command_path(path: &Path) -> String {
+    format!("\"{}\"", normalize_command_path(path).replace('"', "\\\""))
+}
+
+fn render_js_hook_with_munin_bin(template: &str, munin_bin: &Path) -> Result<String> {
+    let bin = serde_json::to_string(&normalize_command_path(munin_bin))
+        .context("failed to render Munin binary path for hook")?;
+    Ok(template.replace("__MUNIN_BIN_JSON__", &bin))
 }
 
 fn upsert_claude_user_prompt_hook(settings: &mut serde_json::Value, command: &str) -> bool {
@@ -2257,6 +2273,8 @@ fn archive_legacy_skills(root: &Path, force: bool, dry_run: bool, label: &str) -
 
 fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Result<usize> {
     let mut writes = 0usize;
+    let munin_bin =
+        std::env::current_exe().context("failed to resolve current munin executable")?;
     let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
     let plugin_manifest = render_codex_plugin_json();
     if write_installer_file(&manifest_path, &plugin_manifest, force, dry_run)? {
@@ -2264,11 +2282,13 @@ fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Resul
         println!("Codex plugin: {}", manifest_path.display());
     }
     let session_start_hook_path = plugin_root.join("hooks").join("munin-session-start.js");
-    let session_start_hook_body =
-        include_str!("../assets/integrations/v1/shared/munin-session-start.js");
+    let session_start_hook_body = render_js_hook_with_munin_bin(
+        include_str!("../assets/integrations/v1/shared/munin-session-start.js"),
+        &munin_bin,
+    )?;
     if write_installer_file(
         &session_start_hook_path,
-        session_start_hook_body,
+        &session_start_hook_body,
         force,
         dry_run,
     )? {
@@ -2476,7 +2496,7 @@ fn render_codex_plugin_json() -> String {
 }
 
 fn render_codex_hooks_json(session_start_hook_path: &Path) -> Result<String> {
-    let command = format!("node {}", normalize_command_path(session_start_hook_path));
+    let command = format!("node {}", quote_command_path(session_start_hook_path));
     let hooks = serde_json::json!({
         "hooks": {
             "SessionStart": [
@@ -2951,13 +2971,35 @@ mod tests {
             .pointer("/hooks/SessionStart/0/hooks/0/command")
             .and_then(|value| value.as_str())
             .expect("command")
-            .contains("munin-session-start.js"));
+            .contains("\"C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js\""));
+    }
+
+    #[test]
+    fn hook_commands_quote_paths_with_spaces() {
+        let hooks_text = render_codex_hooks_json(Path::new(
+            "C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js",
+        ))
+        .expect("hooks json");
+        let hooks_json: serde_json::Value =
+            serde_json::from_str(&hooks_text).expect("hooks json parse");
+        assert_eq!(
+            hooks_json
+                .pointer("/hooks/SessionStart/0/hooks/0/command")
+                .and_then(|value| value.as_str()),
+            Some("node \"C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js\"")
+        );
     }
 
     #[test]
     fn shared_session_start_hook_bypasses_incremental_throttle_without_force_replay() {
         let script = include_str!("../assets/integrations/v1/shared/munin-session-start.js");
+        let rendered =
+            render_js_hook_with_munin_bin(script, Path::new("C:/Users/OEM/bin/munin.exe"))
+                .expect("rendered hook");
 
+        assert!(script.contains("__MUNIN_BIN_JSON__"));
+        assert!(rendered.contains("C:/Users/OEM/bin/munin.exe"));
+        assert!(!rendered.contains("__MUNIN_BIN_JSON__"));
         assert!(script.contains("MUNIN_MEMORY_OS_FORCE_ONBOARDING"));
         assert!(script.contains("'memory-os', 'ingest', '--format', 'json'"));
         assert!(!script.contains("'--force'"));

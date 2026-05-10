@@ -31,7 +31,7 @@ jobs:
         run: cargo build --locked --bin munin
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked -- --test-threads 1
 
       - name: Resolver and skill contracts
         run: cargo run --locked --bin munin -- install --check-resolvable

@@ -5,6 +5,7 @@
 // packet through as additional context when it returns in time.
 
 const { spawnSync } = require('node:child_process');
+const MUNIN_BIN = typeof __MUNIN_BIN_JSON__ === 'string' ? __MUNIN_BIN_JSON__ : 'munin';
 
 const MAX_CONTEXT_CHARS = 8000;
 const TIMEOUT_MS = 5000;
@@ -17,7 +18,7 @@ process.stdin.on('end', () => {
     const rawPrompt = (data.prompt || data.user_message || data.message || '').trim();
     if (!rawPrompt) return;
 
-    const packet = spawnSync('munin', ['runtime', '--surface', 'auto', '--format', 'prompt'], {
+    const packet = spawnSync(MUNIN_BIN, ['runtime', '--surface', 'auto', '--format', 'prompt'], {
       encoding: 'utf8',
       timeout: TIMEOUT_MS,
       maxBuffer: 256 * 1024,

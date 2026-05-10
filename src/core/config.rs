@@ -51,13 +51,14 @@ impl ProactivityProvider {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct ProactivityConfig {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_scope: Option<String>,
     pub schedule_local: String,
     pub provider: ProactivityProvider,
-    #[serde(default)]
+    #[serde(default = "proactivity_auto_spawn_default")]
     pub auto_spawn: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_path: Option<PathBuf>,
@@ -92,6 +93,10 @@ impl Default for ProactivityConfig {
     }
 }
 
+fn proactivity_auto_spawn_default() -> bool {
+    true
+}
+
 impl ProactivityConfig {
     pub fn resolve_scope_name(&self, strategy: &StrategyConfig, requested: Option<&str>) -> String {
         requested
@@ -110,6 +115,7 @@ impl ProactivityConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct StrategyConfig {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,6 +170,7 @@ impl StrategyConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct StrategyScopeConfig {
     #[serde(default = "strategy_scope_enabled_default")]
     pub enabled: bool,
@@ -200,6 +207,7 @@ fn strategy_scope_enabled_default() -> bool {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct MemoryOsConfig {
     pub journal_v1: bool,
     pub dual_write_v1: bool,
@@ -235,6 +243,7 @@ impl Default for MemoryOsConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ArtifactsConfig {
     pub enabled: bool,
     pub min_chars: usize,
@@ -269,6 +278,7 @@ pub struct HooksConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TrackingConfig {
     pub enabled: bool,
     pub history_days: u32,
@@ -287,6 +297,7 @@ impl Default for TrackingConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DisplayConfig {
     pub colors: bool,
     pub emoji: bool,
@@ -304,6 +315,7 @@ impl Default for DisplayConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FilterConfig {
     pub ignore_dirs: Vec<String>,
     pub ignore_files: Vec<String>,
@@ -326,6 +338,7 @@ impl Default for FilterConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TelemetryConfig {
     pub enabled: bool,
 }
@@ -337,6 +350,7 @@ impl Default for TelemetryConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LimitsConfig {
     /// Max total grep results to show (default: 200)
     pub grep_max_results: usize,
@@ -647,6 +661,71 @@ stale_claim_minutes = 120
     fn test_proactivity_default_provider_preserves_legacy_claude_default() {
         let config = Config::default();
         assert_eq!(config.proactivity.provider, ProactivityProvider::Claude);
+    }
+
+    #[test]
+    fn partial_config_sections_use_struct_defaults() {
+        let toml = r#"
+[proactivity]
+enabled = true
+
+[memory_os]
+read_model_v1 = false
+
+[tracking]
+enabled = false
+
+[strategy]
+enabled = true
+
+[artifacts]
+enabled = false
+
+[display]
+emoji = false
+
+[filters]
+ignore_dirs = ["target"]
+
+[tee]
+enabled = false
+
+[telemetry]
+enabled = false
+
+[limits]
+grep_max_results = 10
+"#;
+        let config: Config = toml::from_str(toml).expect("partial config should parse");
+
+        assert!(config.proactivity.enabled);
+        assert_eq!(config.proactivity.schedule_local, "08:00");
+        assert_eq!(config.proactivity.provider, ProactivityProvider::Claude);
+        assert!(config.proactivity.auto_spawn);
+        assert_eq!(config.proactivity.max_spawns_per_day, 1);
+        assert_eq!(config.proactivity.stale_claim_minutes, 90);
+
+        assert!(!config.memory_os.read_model_v1);
+        assert!(config.memory_os.strict_promotion_v1);
+        assert!(config.memory_os.resume_v1);
+        assert!(!config.tracking.enabled);
+        assert_eq!(config.tracking.history_days, DEFAULT_HISTORY_DAYS as u32);
+        assert!(config.strategy.enabled);
+        assert!(config.strategy.scopes.is_empty());
+        assert!(!config.artifacts.enabled);
+        assert_eq!(config.artifacts.min_chars, 4000);
+        assert!(!config.display.emoji);
+        assert_eq!(config.display.max_width, 120);
+        assert_eq!(config.filters.ignore_dirs, vec!["target".to_string()]);
+        assert_eq!(
+            config.filters.ignore_files,
+            vec!["*.lock", "*.min.js", "*.min.css"]
+        );
+        assert!(!config.tee.enabled);
+        assert_eq!(config.tee.max_files, 20);
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.limits.grep_max_results, 10);
+        assert_eq!(config.limits.status_max_files, 15);
     }
 
     #[test]

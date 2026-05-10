@@ -233,6 +233,7 @@ pub enum TeeMode {
 
 /// Configuration for the tee feature.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct TeeConfig {
     pub enabled: bool,
     pub mode: TeeMode,

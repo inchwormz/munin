@@ -269,6 +269,7 @@ pub struct ProactivityStatusReport {
     pub today_result_status: Option<ProactivityTerminalStatus>,
     pub completed_records: usize,
     pub morning_task: ProactivityScheduleTaskStatus,
+    pub alternate_morning_tasks: Vec<ProactivityScheduleTaskStatus>,
     pub sweep_task: ProactivityScheduleTaskStatus,
 }
 
@@ -423,7 +424,7 @@ pub fn run(options: &ProactivityRunOptions) -> Result<ProactivityRunReport> {
                 Vec::new(),
             );
             write_json_file(&files.result_path, &result)?;
-            update_completed_index(&files.completed_path, &result)?;
+            update_completed_index(&files.completed_path, &result, &files.result_path)?;
         }
     }
     record_proactivity_approval_jobs(
@@ -468,7 +469,7 @@ pub fn claim(options: &ProactivityClaimOptions) -> Result<ProactivityClaimReport
     let paths = resolve_paths(&config.proactivity)?;
     ensure_runtime_dirs(&paths)?;
     let _ = ensure_job_projection(&paths, &options.job_id)?;
-    let (pending_path, claim_path, result_path) = locate_job_paths(&paths, &options.job_id);
+    let (pending_path, claim_path, result_path) = locate_job_paths(&paths, &options.job_id)?;
     let mut claimed = false;
     if pending_path.exists() {
         fs::rename(&pending_path, &claim_path).with_context(|| {
@@ -501,7 +502,7 @@ pub fn approve(options: &ProactivityApproveOptions) -> Result<ProactivityApprove
     let config = Config::load().context("Failed to load config.toml")?;
     let paths = resolve_paths(&config.proactivity)?;
     let _ = ensure_job_projection(&paths, &options.job_id)?;
-    let (pending_path, claim_path, result_path) = locate_job_paths(&paths, &options.job_id);
+    let (pending_path, claim_path, result_path) = locate_job_paths(&paths, &options.job_id)?;
     if !pending_path.exists() && claim_path.exists() {
         return Ok(ProactivityApproveReport {
             generated_at: Utc::now().to_rfc3339(),
@@ -602,7 +603,7 @@ pub fn complete(options: &ProactivityCompleteOptions) -> Result<ProactivityCompl
     let paths = resolve_paths(&config.proactivity)?;
     ensure_runtime_dirs(&paths)?;
     let _ = ensure_job_projection(&paths, &options.job_id)?;
-    let (pending_path, claim_path, result_path) = locate_job_paths(&paths, &options.job_id);
+    let (pending_path, claim_path, result_path) = locate_job_paths(&paths, &options.job_id)?;
     let job = load_job_for_completion(&paths, &options.job_id)?;
     let result = ProactivityResultArtifact {
         schema_version: "munin-proactivity-result-v1".to_string(),
@@ -618,7 +619,7 @@ pub fn complete(options: &ProactivityCompleteOptions) -> Result<ProactivityCompl
     };
     write_json_file(&result_path, &result)?;
     let completed_path = paths.state_dir.join(COMPLETED_FILE);
-    update_completed_index(&completed_path, &result)?;
+    update_completed_index(&completed_path, &result, &result_path)?;
     if pending_path.exists() {
         let _ = fs::remove_file(&pending_path);
     }
@@ -708,6 +709,10 @@ pub fn status(options: &ProactivityScopeOptions) -> Result<ProactivityStatusRepo
                 runtime.provider,
             )),
         },
+        alternate_morning_tasks: alternate_morning_task_statuses(
+            &runtime.scope_id,
+            runtime.provider,
+        ),
         sweep_task: ProactivityScheduleTaskStatus {
             name: sweep_task_name(&runtime.scope_id),
             installed: query_task_installed(&sweep_task_name(&runtime.scope_id)),
@@ -724,36 +729,68 @@ pub fn install_schedule(
         options.project_path.as_deref(),
     )?;
     ensure_runtime_dirs(&runtime.paths)?;
+    let exe = std::env::current_exe().context("Failed to resolve current munin executable")?;
+    let mut installed_names = Vec::new();
+    let install_result = (|| -> Result<()> {
+        for stale in removable_task_names(&runtime.scope_id) {
+            if query_task_installed(&stale) {
+                delete_scheduled_task(&stale)?;
+            }
+        }
+        let morning_name = morning_task_name(&runtime.scope_id, runtime.provider);
+        let provider_arg = runtime.provider.as_str();
+        install_scheduled_task(
+            &morning_name,
+            &exe,
+            &[
+                "proactivity",
+                "run",
+                "--scope",
+                runtime.scope_id.as_str(),
+                "--provider",
+                provider_arg,
+            ],
+            ScheduleSpec::Daily {
+                local_time: runtime.schedule_local.clone(),
+            },
+        )?;
+        installed_names.push(morning_name);
+        let sweep_name = sweep_task_name(&runtime.scope_id);
+        install_scheduled_task(
+            &sweep_name,
+            &exe,
+            &["proactivity", "sweep", "--scope", runtime.scope_id.as_str()],
+            ScheduleSpec::IntervalMinutes(SCHEDULE_SWEEP_INTERVAL_MINUTES),
+        )?;
+        installed_names.push(sweep_name);
+        Ok(())
+    })();
+    if let Err(err) = install_result {
+        for name in installed_names {
+            if query_task_installed(&name) {
+                let _ = delete_scheduled_task(&name);
+            }
+        }
+        return Err(err);
+    }
+
     runtime.config.proactivity.enabled = true;
     runtime.config.proactivity.default_scope = Some(runtime.scope_id.clone());
     runtime.config.proactivity.provider = runtime.provider;
     runtime.config.proactivity.auto_spawn = true;
     runtime.config.proactivity.project_path = Some(runtime.project_path.clone());
-    runtime
+    if let Err(err) = runtime
         .config
         .save()
-        .context("Failed to save proactivity config")?;
-
-    let exe = std::env::current_exe().context("Failed to resolve current munin executable")?;
-    for legacy in legacy_task_names(&runtime.scope_id, runtime.provider) {
-        if query_task_installed(&legacy) {
-            delete_scheduled_task(&legacy)?;
+        .context("Failed to save proactivity config")
+    {
+        for name in removable_task_names(&runtime.scope_id) {
+            if query_task_installed(&name) {
+                let _ = delete_scheduled_task(&name);
+            }
         }
+        return Err(err);
     }
-    install_scheduled_task(
-        &morning_task_name(&runtime.scope_id, runtime.provider),
-        &exe,
-        &["proactivity", "run", "--scope", runtime.scope_id.as_str()],
-        ScheduleSpec::Daily {
-            local_time: runtime.schedule_local.clone(),
-        },
-    )?;
-    install_scheduled_task(
-        &sweep_task_name(&runtime.scope_id),
-        &exe,
-        &["proactivity", "sweep", "--scope", runtime.scope_id.as_str()],
-        ScheduleSpec::IntervalMinutes(SCHEDULE_SWEEP_INTERVAL_MINUTES),
-    )?;
 
     Ok(ProactivityScheduleInstallReport {
         generated_at: Utc::now().to_rfc3339(),
@@ -770,13 +807,8 @@ pub fn remove_schedule(
     options: &ProactivityScopeOptions,
 ) -> Result<ProactivityScheduleRemoveReport> {
     let runtime = resolve_runtime(options.scope.as_deref(), None, None)?;
-    let morning = morning_task_name(&runtime.scope_id, runtime.provider);
-    let sweep = sweep_task_name(&runtime.scope_id);
     let mut removed_tasks = Vec::new();
-    for task in std::iter::once(morning)
-        .chain(std::iter::once(sweep))
-        .chain(legacy_task_names(&runtime.scope_id, runtime.provider))
-    {
+    for task in removable_task_names(&runtime.scope_id) {
         if query_task_installed(&task) {
             delete_scheduled_task(&task)?;
             removed_tasks.push(task);
@@ -798,6 +830,7 @@ fn resolve_runtime(
     let scope_id = config
         .proactivity
         .resolve_scope_name(&config.strategy, requested_scope);
+    validate_scope_id(&scope_id)?;
     let provider = provider_override.unwrap_or(config.proactivity.provider);
     let discovered_strategy_project_path =
         strategy::discover_inspect_reports(1)
@@ -861,15 +894,16 @@ fn ensure_runtime_dirs(paths: &ProactivityPaths) -> Result<()> {
 
 fn file_set(runtime: &RuntimeContext) -> Result<FileSet> {
     let local_date = Local::now().format("%Y-%m-%d").to_string();
-    Ok(file_set_for_job(
+    file_set_for_job(
         runtime,
         &build_job_id(&runtime.scope_id, runtime.provider, &local_date),
         &local_date,
-    ))
+    )
 }
 
-fn file_set_for_job(runtime: &RuntimeContext, job_id: &str, local_date: &str) -> FileSet {
-    FileSet {
+fn file_set_for_job(runtime: &RuntimeContext, job_id: &str, local_date: &str) -> Result<FileSet> {
+    validate_job_id_file_stem(job_id)?;
+    Ok(FileSet {
         job_id: job_id.to_string(),
         local_date: local_date.to_string(),
         pending_path: runtime.paths.queue_dir.join(format!("{job_id}.json")),
@@ -886,11 +920,36 @@ fn file_set_for_job(runtime: &RuntimeContext, job_id: &str, local_date: &str) ->
         launch_instructions_path: runtime.paths.briefs_dir.join(format!("{job_id}.launch.md")),
         completed_path: runtime.paths.state_dir.join(COMPLETED_FILE),
         heartbeat_path: runtime.paths.state_dir.join(HEARTBEAT_FILE),
-    }
+    })
 }
 
 fn build_job_id(scope_id: &str, provider: ProactivityProvider, local_date: &str) -> String {
     format!("morning-{scope_id}-{}-{local_date}", provider.as_str())
+}
+
+fn validate_scope_id(scope_id: &str) -> Result<()> {
+    validate_safe_identifier(scope_id, "proactivity scope")
+}
+
+fn validate_job_id_file_stem(job_id: &str) -> Result<()> {
+    validate_safe_identifier(job_id, "proactivity job id")
+}
+
+fn validate_safe_identifier(value: &str, label: &str) -> Result<()> {
+    let trimmed = value.trim();
+    let safe = !trimmed.is_empty()
+        && trimmed == value
+        && trimmed != "."
+        && trimmed != ".."
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+    if !safe {
+        anyhow::bail!(
+            "invalid {label} `{value}`; use only ASCII letters, numbers, dots, underscores, and hyphens"
+        );
+    }
+    Ok(())
 }
 
 fn build_intervention_job_id(
@@ -1774,7 +1833,7 @@ fn sweep_internal(runtime: &RuntimeContext) -> Result<ProactivitySweepReport> {
             continue;
         }
         let result = load_result(&path)?;
-        if update_completed_index(&completed_path, &result)? {
+        if update_completed_index(&completed_path, &result, &path)? {
             finalized_results += 1;
         }
         let pending = runtime
@@ -1813,7 +1872,7 @@ fn sweep_internal(runtime: &RuntimeContext) -> Result<ProactivitySweepReport> {
             .and_then(|name| name.to_str())
             .unwrap_or_default();
         let job = load_job(&path)?;
-        let files = file_set_for_job(runtime, &job.job_id, &job.local_date);
+        let files = file_set_for_job(runtime, &job.job_id, &job.local_date)?;
         let result = if file_name.ends_with(".processing.json") {
             released_stale_claims += 1;
             build_terminal_result(
@@ -1836,7 +1895,7 @@ fn sweep_internal(runtime: &RuntimeContext) -> Result<ProactivitySweepReport> {
             )
         };
         write_json_file(&files.result_path, &result)?;
-        update_completed_index(&completed_path, &result)?;
+        update_completed_index(&completed_path, &result, &files.result_path)?;
         let _ = fs::remove_file(&path);
     }
 
@@ -1889,7 +1948,11 @@ fn load_completed_index(path: &Path) -> Result<ProactivityCompletedIndex> {
     Ok(index)
 }
 
-fn update_completed_index(path: &Path, result: &ProactivityResultArtifact) -> Result<bool> {
+fn update_completed_index(
+    path: &Path,
+    result: &ProactivityResultArtifact,
+    result_path: &Path,
+) -> Result<bool> {
     let mut index = load_completed_index(path)?;
     if index
         .records
@@ -1905,14 +1968,7 @@ fn update_completed_index(path: &Path, result: &ProactivityResultArtifact) -> Re
         provider: result.provider,
         status: result.status,
         recorded_at: result.recorded_at.clone(),
-        result_path: path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("..")
-            .join("results")
-            .join(format!("{}.json", result.job_id))
-            .display()
-            .to_string(),
+        result_path: result_path.display().to_string(),
     });
     write_json_file(path, &index)?;
     Ok(true)
@@ -1959,7 +2015,7 @@ fn reconstruct_job_from_approval_record(
         paths: paths.clone(),
         config: Config::default(),
     };
-    let files = file_set_for_job(&runtime, &record.job_id, &record.local_date);
+    let files = file_set_for_job(&runtime, &record.job_id, &record.local_date)?;
     let intervention_job_ids = related_jobs
         .iter()
         .into_iter()
@@ -2074,7 +2130,7 @@ fn reconstruct_job_from_approval_record(
 }
 
 fn ensure_job_projection(paths: &ProactivityPaths, job_id: &str) -> Result<Option<ProactivityJob>> {
-    let (pending_path, claim_path, _) = locate_job_paths(paths, job_id);
+    let (pending_path, claim_path, _) = locate_job_paths(paths, job_id)?;
     if pending_path.exists() || claim_path.exists() {
         return Ok(None);
     }
@@ -2146,12 +2202,13 @@ fn load_result(path: &Path) -> Result<ProactivityResultArtifact> {
     serde_json::from_str(&content).context("Failed to parse proactivity result")
 }
 
-fn locate_job_paths(paths: &ProactivityPaths, job_id: &str) -> (PathBuf, PathBuf, PathBuf) {
-    (
+fn locate_job_paths(paths: &ProactivityPaths, job_id: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    validate_job_id_file_stem(job_id)?;
+    Ok((
         paths.queue_dir.join(format!("{job_id}.json")),
         paths.queue_dir.join(format!("{job_id}.processing.json")),
         paths.results_dir.join(format!("{job_id}.json")),
-    )
+    ))
 }
 
 fn count_queue_entries(queue_dir: &Path, claimed: bool) -> Result<usize> {
@@ -2255,7 +2312,7 @@ fn build_launch_command(
     );
 
     match runtime.provider {
-        ProactivityProvider::Claude => build_shell_launch_command(
+        ProactivityProvider::Claude => build_provider_launch_command(
             "Munin Morning Claude",
             &runtime.project_path,
             "claude",
@@ -2275,46 +2332,6 @@ fn build_launch_command(
             &[],
         ),
     }
-}
-
-fn build_shell_launch_command(
-    title: &str,
-    cwd: &Path,
-    program: &str,
-    args: &[&str],
-    cleared_env: &[&str],
-) -> Result<LaunchCommand> {
-    let mut segments = Vec::new();
-    for env_key in cleared_env {
-        segments.push(format!("set {}=", env_key));
-    }
-    segments.push(format!(
-        "cd /d {}",
-        quote_for_cmd(cwd.display().to_string())
-    ));
-    let rendered_args = args
-        .iter()
-        .map(|arg| quote_arg_if_needed(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
-    segments.push(format!("{program} {rendered_args}").trim().to_string());
-    let inner = segments.join(" && ");
-    let launch = format!(
-        "$host.ui.RawUI.WindowTitle = {}; Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', {}) -WorkingDirectory {} -WindowStyle Normal",
-        quote_for_powershell(title),
-        quote_for_powershell(&inner),
-        quote_for_powershell(&cwd.display().to_string())
-    );
-    Ok(LaunchCommand {
-        preview: launch.clone(),
-        runner: "powershell.exe".to_string(),
-        args: vec![
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
-            "-Command".to_string(),
-            launch,
-        ],
-    })
 }
 
 fn build_provider_launch_command(
@@ -2421,6 +2438,31 @@ fn morning_task_name(scope_id: &str, provider: ProactivityProvider) -> String {
     format!("Munin-Proactivity-Morning-{scope_id}-{}", provider.as_str())
 }
 
+fn modern_morning_task_names(scope_id: &str) -> Vec<String> {
+    [ProactivityProvider::Claude, ProactivityProvider::Codex]
+        .iter()
+        .map(|provider| morning_task_name(scope_id, *provider))
+        .collect()
+}
+
+fn alternate_morning_task_statuses(
+    scope_id: &str,
+    current_provider: ProactivityProvider,
+) -> Vec<ProactivityScheduleTaskStatus> {
+    [ProactivityProvider::Claude, ProactivityProvider::Codex]
+        .iter()
+        .copied()
+        .filter(|provider| *provider != current_provider)
+        .map(|provider| {
+            let name = morning_task_name(scope_id, provider);
+            ProactivityScheduleTaskStatus {
+                installed: query_task_installed(&name),
+                name,
+            }
+        })
+        .collect()
+}
+
 fn sweep_task_name(scope_id: &str) -> String {
     format!("Munin-Proactivity-Sweep-{scope_id}")
 }
@@ -2434,6 +2476,29 @@ fn legacy_task_names(scope_id: &str, provider: ProactivityProvider) -> Vec<Strin
         ),
         format!("Context-Munin-Proactivity-Sweep-{scope_id}"),
     ]
+}
+
+fn all_legacy_task_names(scope_id: &str) -> Vec<String> {
+    let mut tasks = Vec::new();
+    for provider in [ProactivityProvider::Claude, ProactivityProvider::Codex] {
+        for name in legacy_task_names(scope_id, provider) {
+            if !tasks.contains(&name) {
+                tasks.push(name);
+            }
+        }
+    }
+    tasks
+}
+
+fn removable_task_names(scope_id: &str) -> Vec<String> {
+    let mut tasks = modern_morning_task_names(scope_id);
+    tasks.push(sweep_task_name(scope_id));
+    for name in all_legacy_task_names(scope_id) {
+        if !tasks.contains(&name) {
+            tasks.push(name);
+        }
+    }
+    tasks
 }
 
 fn build_task_action(exe: &Path, args: &[&str]) -> String {
@@ -3042,10 +3107,49 @@ mod tests {
     fn build_task_action_quotes_executable() {
         let action = build_task_action(
             Path::new("C:/Program Files/context/context.exe"),
-            &["proactivity", "run", "--scope", "sitesorted-business"],
+            &[
+                "proactivity",
+                "run",
+                "--scope",
+                "sitesorted-business",
+                "--provider",
+                "codex",
+            ],
         );
         assert!(action.starts_with("\"C:/Program Files/context/context.exe\""));
         assert!(action.contains("proactivity run"));
+        assert!(action.contains("--provider codex"));
+    }
+
+    #[test]
+    fn removable_task_names_include_both_provider_morning_tasks() {
+        let tasks = removable_task_names("sitesorted-business");
+
+        assert!(tasks.contains(&"Munin-Proactivity-Morning-sitesorted-business-claude".to_string()));
+        assert!(tasks.contains(&"Munin-Proactivity-Morning-sitesorted-business-codex".to_string()));
+        assert!(tasks.contains(&"Munin-Proactivity-Sweep-sitesorted-business".to_string()));
+        assert!(tasks
+            .contains(&"Context-Munin-Proactivity-Morning-sitesorted-business-claude".to_string()));
+        assert!(tasks
+            .contains(&"Context-Munin-Proactivity-Morning-sitesorted-business-codex".to_string()));
+    }
+
+    #[test]
+    fn proactivity_scope_and_job_ids_reject_path_traversal() {
+        assert!(validate_scope_id("sitesorted-business").is_ok());
+        assert!(validate_scope_id("..\\..\\Temp\\escape").is_err());
+        assert!(validate_scope_id("../escape").is_err());
+        assert!(validate_scope_id("bad:scope").is_err());
+
+        let paths = ProactivityPaths {
+            queue_dir: PathBuf::from("queue"),
+            results_dir: PathBuf::from("results"),
+            briefs_dir: PathBuf::from("briefs"),
+            state_dir: PathBuf::from("state"),
+        };
+        assert!(locate_job_paths(&paths, "morning-sitesorted-business-codex-2026-05-11").is_ok());
+        assert!(locate_job_paths(&paths, "..\\escape").is_err());
+        assert!(locate_job_paths(&paths, "C:\\Temp\\escape").is_err());
     }
 
     #[test]
@@ -3755,7 +3859,8 @@ mod tests {
             &runtime,
             "morning-sitesorted-business-2026-04-14",
             "2026-04-14",
-        );
+        )
+        .expect("file set");
         write_json_file(&files.claim_path, &serde_json::json!({"claimed": true}))
             .expect("claim marker");
         tracker
@@ -3856,6 +3961,7 @@ mod tests {
     fn completed_index_updates_once_per_job() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("completed.json");
+        let result_path = temp.path().join("custom-results").join("job.json");
         let result = ProactivityResultArtifact {
             schema_version: "munin-proactivity-result-v1".to_string(),
             recorded_at: Utc::now().to_rfc3339(),
@@ -3868,8 +3974,13 @@ mod tests {
             error: None,
             notes: Vec::new(),
         };
-        assert!(update_completed_index(&path, &result).expect("first insert"));
-        assert!(!update_completed_index(&path, &result).expect("dedupe insert"));
+        assert!(update_completed_index(&path, &result, &result_path).expect("first insert"));
+        assert!(!update_completed_index(&path, &result, &result_path).expect("dedupe insert"));
+        let index = load_completed_index(&path).expect("index");
+        assert_eq!(
+            index.records[0].result_path,
+            result_path.display().to_string()
+        );
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! Automatic first-run session backfill into Memory OS.
 
-use crate::analytics::session_impact_cmd::{load_sessions, CommandOutcome, SessionRecord};
+use crate::analytics::session_impact_cmd::{
+    load_sessions, session_home_dir, CommandOutcome, SessionRecord,
+};
 use crate::core::memory_os::{
     MemoryOsAction, MemoryOsActionCue, MemoryOsCheckpointCapture, MemoryOsCheckpointReentry,
     MemoryOsCheckpointTelemetry, MemoryOsPacketSelection,
@@ -288,7 +290,13 @@ fn source_bias(source: crate::analytics::session_impact_cmd::SessionSource) -> u
 }
 
 fn load_recall_sessions() -> Result<Vec<SessionRecord>> {
-    let root = PathBuf::from("C:\\Users\\OEM\\Documents\\Obsidian Vault\\Sessions");
+    let Some(home) = session_home_dir() else {
+        return Ok(Vec::new());
+    };
+    let root = home
+        .join("Documents")
+        .join("Obsidian Vault")
+        .join("Sessions");
     if !root.exists() {
         return Ok(Vec::new());
     }
@@ -895,7 +903,8 @@ fn clean_prompt_for_session_summary(text: &str) -> String {
 fn scrub_local_paths_for_summary(text: &str) -> String {
     text.split_whitespace()
         .map(|token| {
-            let trimmed = token.trim_matches(|ch| matches!(ch, '\'' | '"' | '(' | ')' | '[' | ']'));
+            let trimmed =
+                token.trim_matches(|ch| matches!(ch, '\'' | '"' | '`' | '(' | ')' | '[' | ']'));
             if trimmed.starts_with("C:\\")
                 || trimmed.starts_with("C:/")
                 || trimmed.starts_with("c:\\")
@@ -903,12 +912,14 @@ fn scrub_local_paths_for_summary(text: &str) -> String {
             {
                 let prefix = token
                     .chars()
-                    .take_while(|ch| matches!(ch, '\'' | '"' | '(' | '['))
+                    .take_while(|ch| matches!(ch, '\'' | '"' | '`' | '(' | '['))
                     .collect::<String>();
                 let suffix = token
                     .chars()
                     .rev()
-                    .take_while(|ch| matches!(ch, '\'' | '"' | ')' | ']' | '.' | ',' | ';' | ':'))
+                    .take_while(|ch| {
+                        matches!(ch, '\'' | '"' | '`' | ')' | ']' | '.' | ',' | ';' | ':')
+                    })
                     .collect::<String>()
                     .chars()
                     .rev()
@@ -1566,6 +1577,28 @@ mod tests {
         assert!(summary
             .summary
             .contains("only low-information navigation or inspection commands were captured"));
+    }
+
+    #[test]
+    fn session_summary_scrubs_backticked_windows_paths() {
+        let text = scrub_local_paths_for_summary(
+            "Read `C:\\Users\\OEM\\AppData\\Local\\context\\brief.md` before starting.",
+        );
+
+        assert!(text.contains("`[local path]`"));
+        assert!(!text.contains("AppData\\Local\\context"));
+    }
+
+    #[test]
+    fn recall_sessions_follow_sandboxed_session_home() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let tmp = TempDir::new().expect("temp dir");
+        std::env::set_var("MUNIN_SESSION_HOME", tmp.path());
+
+        let sessions = load_recall_sessions().expect("recall sessions");
+
+        assert!(sessions.is_empty());
+        std::env::remove_var("MUNIN_SESSION_HOME");
     }
 
     #[test]
