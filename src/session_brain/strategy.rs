@@ -133,16 +133,18 @@ mod tests {
     fn relevant_scopes_do_not_include_non_matching_default_scope() {
         let mut scopes = BTreeMap::new();
         scopes.insert(
-            "sitesorted-business".to_string(),
+            "example-business".to_string(),
             StrategyScopeConfig {
-                continuity_project_path: Some(PathBuf::from("C:/Users/OEM/Projects/sitesorted")),
+                continuity_project_path: Some(PathBuf::from(
+                    "C:/Users/OEM/Projects/example-project",
+                )),
                 ..Default::default()
             },
         );
         let config = Config {
             strategy: StrategyConfig {
                 enabled: true,
-                default_scope: Some("sitesorted-business".to_string()),
+                default_scope: Some("example-business".to_string()),
                 directory: None,
                 scopes,
             },

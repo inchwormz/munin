@@ -560,12 +560,12 @@ history_days = 90
         let toml = r#"
 [strategy]
 enabled = true
-default_scope = "sitesorted-business"
+default_scope = "example-business"
 
-[strategy.scopes.sitesorted-business]
+[strategy.scopes.example-business]
 artifact_path = "C:/strategy/opsp.md"
 metrics_path = "C:/strategy/metrics.json"
-continuity_project_path = "C:/Users/OEM/Projects/sitesorted"
+continuity_project_path = "C:/Users/OEM/Projects/example-project"
 storage_dir = "C:/strategy/state"
 "#;
         let config: Config = toml::from_str(toml).expect("valid toml");
@@ -575,7 +575,7 @@ storage_dir = "C:/strategy/state"
             .expect("default strategy scope should resolve");
 
         assert!(config.strategy.enabled);
-        assert_eq!(scope_name, "sitesorted-business");
+        assert_eq!(scope_name, "example-business");
         assert_eq!(
             scope.artifact_path.as_deref(),
             Some(PathBuf::from("C:/strategy/opsp.md").as_path())
@@ -590,7 +590,7 @@ storage_dir = "C:/strategy/state"
         );
         assert_eq!(
             scope.continuity_project_path.as_deref(),
-            Some(PathBuf::from("C:/Users/OEM/Projects/sitesorted").as_path())
+            Some(PathBuf::from("C:/Users/OEM/Projects/example-project").as_path())
         );
     }
 
@@ -628,11 +628,11 @@ storage_dir = "C:/strategy/state"
         let toml = r#"
 [proactivity]
 enabled = true
-default_scope = "sitesorted-business"
+default_scope = "example-business"
 schedule_local = "08:00"
 provider = "codex"
 auto_spawn = true
-project_path = "C:/Users/OEM/Projects/sitesorted"
+project_path = "C:/Users/OEM/Projects/example-project"
 queue_dir = "C:/Users/OEM/AppData/Local/context/proactivity/queue"
 results_dir = "C:/Users/OEM/AppData/Local/context/proactivity/results"
 briefs_dir = "C:/Users/OEM/AppData/Local/context/proactivity/briefs"
@@ -644,14 +644,14 @@ stale_claim_minutes = 120
         assert!(config.proactivity.enabled);
         assert_eq!(
             config.proactivity.default_scope.as_deref(),
-            Some("sitesorted-business")
+            Some("example-business")
         );
         assert_eq!(config.proactivity.schedule_local, "08:00");
         assert_eq!(config.proactivity.provider, ProactivityProvider::Codex);
         assert!(config.proactivity.auto_spawn);
         assert_eq!(
             config.proactivity.project_path.as_deref(),
-            Some(PathBuf::from("C:/Users/OEM/Projects/sitesorted").as_path())
+            Some(PathBuf::from("C:/Users/OEM/Projects/example-project").as_path())
         );
         assert_eq!(config.proactivity.max_spawns_per_day, 2);
         assert_eq!(config.proactivity.stale_claim_minutes, 120);

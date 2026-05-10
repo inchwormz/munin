@@ -4734,7 +4734,7 @@ mod tests {
             .upsert_approval_job_for_project(
                 &project,
                 &ApprovalJobInput {
-                    job_id: "approval-sitesorted-2026-04-14-kpi-paying-customers".to_string(),
+                    job_id: "approval-example-2026-04-14-kpi-paying-customers".to_string(),
                     scope: "project".to_string(),
                     scope_target: Some(project.clone()),
                     local_date: "2026-04-14".to_string(),

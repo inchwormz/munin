@@ -2943,7 +2943,7 @@ mod tests {
         let checkpoints = vec![onboarding_checkpoint(
             "2026-04-01T00:00:00Z",
             "2026-04-01T00:00:10Z",
-            "You are processing a SiteSorted clone-speed job. This is FULLY AUTONOMOUS: never ask questions, never pause for input.",
+            "You are processing a ExampleCo clone-speed job. This is FULLY AUTONOMOUS: never ask questions, never pause for input.",
         )];
 
         let counts = count_user_prose_signals(&checkpoints);

@@ -1190,7 +1190,7 @@ fn semantic_fact_categories(text: &str) -> Vec<(&'static str, &'static str, i64)
     if contains_any(
         &lowered,
         &[
-            "sitesorted",
+            "example-project",
             "site sorted",
             "watcher-v2",
             "siterecord",
@@ -1570,7 +1570,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
             command:
-                "context ls C:/Users/OEM/Projects/sitesorted/watcher-v2/logs/sales-autopilot-*.log 2>&1"
+                "context ls C:/Users/OEM/Projects/example-project/watcher-v2/logs/sales-autopilot-*.log 2>&1"
                     .to_string(),
             output: "Done".to_string(),
             outcome: CommandOutcome::Success,

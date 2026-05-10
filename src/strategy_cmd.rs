@@ -191,17 +191,17 @@ mod tests {
 
     #[test]
     fn prompt_wrapper_includes_strategy_report_tag() {
-        let rendered = render_prompt(&serde_json::json!({ "scope": "sitesorted-business" }))
+        let rendered = render_prompt(&serde_json::json!({ "scope": "example-business" }))
             .expect("prompt render");
         assert!(rendered.contains("<strategy_report"));
-        assert!(rendered.contains("sitesorted-business"));
+        assert!(rendered.contains("example-business"));
     }
 
     #[test]
     fn nudge_text_includes_suggested_task_queue() {
         let report = strategy::StrategyRecommendReport {
             generated_at: "2026-04-19T00:00:00Z".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             continuity: strategy::StrategyContinuitySnapshot {
                 active: false,
                 summary: None,

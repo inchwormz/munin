@@ -246,7 +246,7 @@ Example shape:
 ```text
 Strategy Nudge
 --------------
-Scope: sitesorted-business
+Scope: example-business
 Suggested task queue:
 1. Address red-state `Outreach reply rate`
 2. Resume incomplete work: Finish recording-ready Munin onboarding

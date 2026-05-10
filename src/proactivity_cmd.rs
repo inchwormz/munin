@@ -191,7 +191,7 @@ mod tests {
     fn text_response_is_not_json_object_dump() {
         let report = serde_json::json!({
             "generated_at": "2026-05-10T00:00:00Z",
-            "scope_id": "sitesorted-business",
+            "scope_id": "example-business",
             "provider": "codex",
             "today_pending": false,
             "reasons": ["approval_queue_ready"]

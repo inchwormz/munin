@@ -2816,7 +2816,7 @@ mod tests {
             "--format",
             "json",
         ]);
-        parse_ok(&["munin", "nudge", "--scope", "sitesorted-business"]);
+        parse_ok(&["munin", "nudge", "--scope", "example-business"]);
         parse_ok(&["munin", "prove", "--last-resume"]);
         parse_ok(&["munin", "friction", "--agent", "codex", "--last", "30d"]);
         parse_ok(&["munin", "promote", "use bun, not npm"]);
@@ -2841,7 +2841,7 @@ mod tests {
         parse_ok(&["munin", "install", "--codex", "--dry-run"]);
         parse_ok(&["munin", "install", "--check-resolvable"]);
         parse_ok(&["munin", "resolve", "what", "keeps", "going", "wrong"]);
-        parse_ok(&["munin", "metrics", "get", "--scope", "sitesorted-business"]);
+        parse_ok(&["munin", "metrics", "get", "--scope", "example-business"]);
         parse_ok(&["munin", "hygiene"]);
         parse_ok(&["munin", "hygiene", "--root", ".", "--include-codex"]);
         parse_ok(&[
@@ -2849,7 +2849,7 @@ mod tests {
             "proactivity",
             "run",
             "--scope",
-            "sitesorted-business",
+            "example-business",
             "--provider",
             "claude",
             "--auto-spawn",
@@ -2862,7 +2862,7 @@ mod tests {
             "proactivity",
             "schedule-install",
             "--scope",
-            "sitesorted-business",
+            "example-business",
             "--provider",
             "codex",
             "--project-path",
@@ -2874,14 +2874,14 @@ mod tests {
             "proactivity",
             "claim",
             "--job-id",
-            "morning-sitesorted-business-2026-04-19",
+            "morning-example-business-2026-04-19",
         ]);
         parse_ok(&[
             "munin",
             "proactivity",
             "approve",
             "--job-id",
-            "morning-sitesorted-business-2026-04-19",
+            "morning-example-business-2026-04-19",
             "--no-spawn",
         ]);
         parse_ok(&[
@@ -2889,7 +2889,7 @@ mod tests {
             "proactivity",
             "reject",
             "--job-id",
-            "morning-sitesorted-business-2026-04-19",
+            "morning-example-business-2026-04-19",
             "--summary",
             "not today",
         ]);
@@ -2898,7 +2898,7 @@ mod tests {
             "proactivity",
             "complete",
             "--job-id",
-            "morning-sitesorted-business-2026-04-19",
+            "morning-example-business-2026-04-19",
             "--status",
             "complete",
             "--summary",
@@ -2911,7 +2911,7 @@ mod tests {
             "sales.pipeline",
             "12",
             "--scope",
-            "sitesorted-business",
+            "example-business",
             "--unit",
             "leads",
         ]);

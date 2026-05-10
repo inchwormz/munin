@@ -2306,8 +2306,8 @@ mod tests {
         r#"{
   "schema_version": "strategic-plan-context-v1",
   "organization": {
-    "name": "SiteSorted",
-    "scope_id": "sitesorted-business",
+    "name": "ExampleCo",
+    "scope_id": "example-business",
     "date": "2026-04-14",
     "plan_period": "FY2026",
     "active_quarter": "Q2 2026"
@@ -2384,14 +2384,11 @@ mod tests {
             content_hash: "abc".to_string(),
             imported_at: "2026-04-14T00:00:00Z".to_string(),
         };
-        let kernel = parse_strategy_markdown(
-            "sitesorted-business",
-            &sample_strategy_markdown(),
-            &source_doc,
-        )
-        .expect("kernel");
+        let kernel =
+            parse_strategy_markdown("example-business", &sample_strategy_markdown(), &source_doc)
+                .expect("kernel");
 
-        assert_eq!(kernel.scope_id, "sitesorted-business");
+        assert_eq!(kernel.scope_id, "example-business");
         assert_eq!(kernel.goals.len(), 1);
         assert_eq!(kernel.kpis.len(), 2);
         assert_eq!(kernel.initiatives.len(), 2);
@@ -2412,11 +2409,10 @@ mod tests {
             content_hash: "abc".to_string(),
             imported_at: "2026-04-14T00:00:00Z".to_string(),
         };
-        let kernel =
-            parse_strategy_json("sitesorted-business", &sample_strategy_json(), &source_doc)
-                .expect("kernel");
+        let kernel = parse_strategy_json("example-business", &sample_strategy_json(), &source_doc)
+            .expect("kernel");
 
-        assert_eq!(kernel.scope_id, "sitesorted-business");
+        assert_eq!(kernel.scope_id, "example-business");
         assert_eq!(kernel.goals.len(), 1);
         assert_eq!(kernel.kpis.len(), 1);
         assert_eq!(kernel.initiatives.len(), 1);
@@ -2442,8 +2438,8 @@ mod tests {
             content_hash: "abc".to_string(),
             imported_at: "2026-04-14T00:00:00Z".to_string(),
         };
-        let content = sample_strategy_json().replace("sitesorted-business", "other-business");
-        let err = parse_strategy_json("sitesorted-business", &content, &source_doc)
+        let content = sample_strategy_json().replace("example-business", "other-business");
+        let err = parse_strategy_json("example-business", &content, &source_doc)
             .expect_err("scope mismatch should fail");
         assert!(err.to_string().contains("does not match requested scope"));
     }
@@ -2554,11 +2550,11 @@ mod tests {
         let storage_dir = temp.path().join("strategy-store");
         let metrics_path = storage_dir.join(STRATEGY_DEFAULT_METRICS_FILE);
         let registry = build_source_registry(
-            "sitesorted-business",
+            "example-business",
             &artifact_path,
             &StrategyScopeConfig {
                 enabled: true,
-                label: Some("sitesorted-business".to_string()),
+                label: Some("example-business".to_string()),
                 artifact_path: Some(artifact_path.clone()),
                 metrics_path: Some(metrics_path.clone()),
                 continuity_project_path: None,
@@ -2575,11 +2571,11 @@ mod tests {
             false,
         )
         .expect("registry");
-        let kernel = import_strategy_kernel("sitesorted-business", &artifact_path).expect("kernel");
+        let kernel = import_strategy_kernel("example-business", &artifact_path).expect("kernel");
 
         save_registry(&storage_dir.join(STRATEGY_REGISTRY_FILE), &registry).expect("save registry");
         save_kernel(&storage_dir.join(STRATEGY_KERNEL_FILE), &kernel).expect("save kernel");
-        ensure_metrics_file(&metrics_path, "sitesorted-business").expect("metrics file");
+        ensure_metrics_file(&metrics_path, "example-business").expect("metrics file");
 
         assert!(storage_dir.join(STRATEGY_REGISTRY_FILE).exists());
         assert!(storage_dir.join(STRATEGY_KERNEL_FILE).exists());
@@ -2596,10 +2592,10 @@ mod tests {
         std::env::set_var("MUNIN_DATA_DIR", &data_dir);
 
         let mut config = crate::core::config::Config::default();
-        config.strategy.default_scope = Some("sitesorted-business".to_string());
+        config.strategy.default_scope = Some("example-business".to_string());
         config.save().expect("config");
 
-        let storage_dir = data_dir.join(STRATEGY_DIR).join("sitesorted-business");
+        let storage_dir = data_dir.join(STRATEGY_DIR).join("example-business");
         let artifact_path = storage_dir.join(STRATEGY_TEMPLATE_JSON_FILE);
         let metrics_path = storage_dir.join(STRATEGY_DEFAULT_METRICS_FILE);
         fs::create_dir_all(&storage_dir).expect("storage dir");
@@ -2607,7 +2603,7 @@ mod tests {
 
         let scope_config = StrategyScopeConfig {
             enabled: true,
-            label: Some("sitesorted-business".to_string()),
+            label: Some("example-business".to_string()),
             artifact_path: Some(artifact_path.clone()),
             metrics_path: Some(metrics_path.clone()),
             continuity_project_path: None,
@@ -2621,7 +2617,7 @@ mod tests {
             metrics_path: metrics_path.clone(),
         };
         let registry = build_source_registry(
-            "sitesorted-business",
+            "example-business",
             &artifact_path,
             &scope_config,
             &store_paths,
@@ -2634,7 +2630,7 @@ mod tests {
             &store_paths.kernel_path,
             &StrategyKernel {
                 schema_version: "strategy-kernel-v1".to_string(),
-                scope_id: "sitesorted-business".to_string(),
+                scope_id: "example-business".to_string(),
                 imported_at: Utc::now().to_rfc3339(),
                 sources: Vec::new(),
                 goals: Vec::new(),
@@ -2645,15 +2641,15 @@ mod tests {
             },
         )
         .expect("save empty kernel");
-        ensure_metrics_file(&metrics_path, "sitesorted-business").expect("metrics");
+        ensure_metrics_file(&metrics_path, "example-business").expect("metrics");
 
         let report = inspect(&StrategyReadOptions {
-            scope: "sitesorted-business".to_string(),
+            scope: "example-business".to_string(),
         })
         .expect("inspect should fall back to existing store");
         let saved_kernel = load_kernel(&store_paths.kernel_path).expect("saved kernel");
         let status_report = status(&StrategyReadOptions {
-            scope: "sitesorted-business".to_string(),
+            scope: "example-business".to_string(),
         })
         .expect("status");
 
@@ -2678,17 +2674,17 @@ mod tests {
         std::env::set_var("MUNIN_DATA_DIR", &data_dir);
 
         let mut config = crate::core::config::Config::default();
-        config.strategy.default_scope = Some("sitesorted-business".to_string());
+        config.strategy.default_scope = Some("example-business".to_string());
         config.save().expect("config");
 
-        let storage_dir = data_dir.join(STRATEGY_DIR).join("sitesorted-business");
+        let storage_dir = data_dir.join(STRATEGY_DIR).join("example-business");
         let artifact_path = storage_dir.join(STRATEGY_TEMPLATE_JSON_FILE);
         let metrics_path = storage_dir.join(STRATEGY_DEFAULT_METRICS_FILE);
         fs::create_dir_all(&storage_dir).expect("storage dir");
         fs::write(&artifact_path, sample_strategy_json()).expect("artifact");
         let scope_config = StrategyScopeConfig {
             enabled: true,
-            label: Some("sitesorted-business".to_string()),
+            label: Some("example-business".to_string()),
             artifact_path: Some(artifact_path.clone()),
             metrics_path: Some(metrics_path.clone()),
             continuity_project_path: None,
@@ -2702,7 +2698,7 @@ mod tests {
             metrics_path: metrics_path.clone(),
         };
         let registry = build_source_registry(
-            "sitesorted-business",
+            "example-business",
             &artifact_path,
             &scope_config,
             &store_paths,
@@ -2710,13 +2706,13 @@ mod tests {
             false,
         )
         .expect("registry");
-        let kernel = import_strategy_kernel("sitesorted-business", &artifact_path).expect("kernel");
+        let kernel = import_strategy_kernel("example-business", &artifact_path).expect("kernel");
         save_registry(&store_paths.registry_path, &registry).expect("save registry");
         save_kernel(&store_paths.kernel_path, &kernel).expect("save kernel");
-        ensure_metrics_file(&metrics_path, "sitesorted-business").expect("metrics");
+        ensure_metrics_file(&metrics_path, "example-business").expect("metrics");
 
         let report = metrics_get(StrategyMetricGetOptions {
-            scope: "sitesorted-business".to_string(),
+            scope: "example-business".to_string(),
             metric_key: None,
         })
         .expect("metrics get");

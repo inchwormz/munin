@@ -1041,7 +1041,7 @@ fn brief_finding_belongs_in_knowledge(
     if authoritative_strategy_active
         && matches!(
             finding.title.as_str(),
-            "Business strategy" | "Lead generation strategy" | "SiteSorted focus"
+            "Business strategy" | "Lead generation strategy" | "Example project focus"
         )
     {
         return false;
@@ -1057,7 +1057,7 @@ fn brief_finding_belongs_in_knowledge(
             | "Lead generation strategy"
             | "Memory OS direction"
             | "Project focus"
-            | "SiteSorted focus"
+            | "Example project focus"
     )
 }
 
@@ -1902,7 +1902,7 @@ fn doctor_strategy_scope() -> String {
     crate::core::config::Config::load()
         .ok()
         .and_then(|config| config.strategy.configured_scope_name(None))
-        .unwrap_or_else(|| "sitesorted-business".to_string())
+        .unwrap_or_else(|| "example-business".to_string())
 }
 
 fn doctor_strategy_signal_count(kernel: &strategy::StrategyKernel) -> usize {
@@ -1962,7 +1962,7 @@ fn doctor_partial_strategy_memory(tracker: &Tracker) -> Result<Vec<String>> {
         .filter(|finding| {
             matches!(
                 finding.title.as_str(),
-                "Business strategy" | "Lead generation strategy" | "SiteSorted focus"
+                "Business strategy" | "Lead generation strategy" | "Example project focus"
             )
         })
         .take(3)
@@ -1981,7 +1981,7 @@ fn doctor_partial_strategy_memory(tracker: &Tracker) -> Result<Vec<String>> {
                 .top_projects
                 .iter()
                 .filter(|project| {
-                    project.repo_label.contains("sitesorted")
+                    project.repo_label.contains("example-project")
                         || project.repo_label.contains("munin")
                 })
                 .take(3)
@@ -3877,7 +3877,7 @@ mod tests {
         ));
 
         assert!(!action_memory_cue_is_noise(
-            "user asked about sitesorted strategy"
+            "user asked about example-project strategy"
         ));
         assert!(!action_memory_cue_is_noise(
             "current work: review memory-os output"
@@ -4054,7 +4054,7 @@ mod tests {
         };
         let kernel = strategy::StrategyKernel {
             schema_version: "strategy-kernel-v1".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             imported_at: "2026-04-17T00:00:00Z".to_string(),
             sources: vec![strategy::StrategySourceDocument {
                 source_id: "source-1".to_string(),
@@ -4206,8 +4206,8 @@ mod tests {
             "Keep the look the same and only make the functional change.",
         )));
         assert!(active_finding_is_specific(&finding(
-            "SiteSorted focus",
-            "Everything should go to SiteSorted by default.",
+            "Example project focus",
+            "Everything should go to ExampleCo by default.",
         )));
     }
 

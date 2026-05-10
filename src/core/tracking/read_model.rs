@@ -345,11 +345,11 @@ fn user_prose_title(summary: &str) -> String {
         return "Positive feedback".to_string();
     }
     if lowered.contains("site sorted")
-        || lowered.contains("sitesorted")
+        || lowered.contains("example-project")
         || lowered.contains(" on gate")
         || lowered.contains("everything should go to site")
     {
-        return "SiteSorted focus".to_string();
+        return "Example project focus".to_string();
     }
     if lowered.contains("lead database")
         || lowered.contains("builders")
@@ -427,7 +427,7 @@ fn user_prose_title_priority(title: &str) -> i32 {
         "Current work" => 0,
         "Business strategy" => 1,
         "Lead generation strategy" => 2,
-        "SiteSorted focus" => 3,
+        "Example project focus" => 3,
         "Memory OS direction" => 4,
         "Working preference" => 5,
         "Product constraint" => 6,
@@ -468,7 +468,7 @@ mod tests {
         )
         .is_none());
         assert!(meaningful_user_prose_summary(
-            "Read C:\\Users\\OEM\\Projects\\sitesorted\\.omx2\\codex-state\\team\\x\\workers\\worker-1\\inbox.md and execute your assignment."
+            "Read C:\\Users\\OEM\\Projects\\example-project\\.omx2\\codex-state\\team\\x\\workers\\worker-1\\inbox.md and execute your assignment."
         )
         .is_none());
         assert_eq!(
@@ -487,7 +487,7 @@ mod tests {
     fn user_prose_title_maps_signals_to_useful_sections() {
         assert_eq!(
             user_prose_title("I want it on Gate. I just want it on Site Sorted."),
-            "SiteSorted focus"
+            "Example project focus"
         );
         assert_eq!(
             user_prose_title("What the hell are you doing? This is useless command noise."),
@@ -584,7 +584,7 @@ mod tests {
             .any(|finding| finding.title == "Memory OS direction"));
         assert!(findings
             .iter()
-            .any(|finding| finding.title == "SiteSorted focus"));
+            .any(|finding| finding.title == "Example project focus"));
         assert!(findings
             .iter()
             .any(|finding| finding.title == "Current work"));
@@ -1078,7 +1078,7 @@ pub(super) fn build_memory_os_recurring_themes(
                 "Memory OS direction"
                     | "Business strategy"
                     | "Lead generation strategy"
-                    | "SiteSorted focus"
+                    | "Example project focus"
                     | "Current work"
             )
         })

@@ -2985,8 +2985,9 @@ mod tests {
     fn sample_config() -> Config {
         let mut config = Config::default();
         config.proactivity.enabled = true;
-        config.proactivity.default_scope = Some("sitesorted-business".to_string());
-        config.proactivity.project_path = Some(PathBuf::from("C:/Users/OEM/Projects/sitesorted"));
+        config.proactivity.default_scope = Some("example-business".to_string());
+        config.proactivity.project_path =
+            Some(PathBuf::from("C:/Users/OEM/Projects/example-project"));
         config
     }
 
@@ -3003,7 +3004,7 @@ mod tests {
             }],
             top_projects: vec![
                 MemoryOsProjectSummary {
-                    project_path: "C:/Users/OEM/Projects/sitesorted/watcher-v2".to_string(),
+                    project_path: "C:/Users/OEM/Projects/example-project/watcher-v2".to_string(),
                     repo_label: "watcher-v2".to_string(),
                     sessions: 377,
                     shell_executions: 5370,
@@ -3078,19 +3079,15 @@ mod tests {
     fn build_job_id_is_scope_and_date_stable() {
         assert_eq!(
             build_job_id(
-                "sitesorted-business",
+                "example-business",
                 ProactivityProvider::Claude,
                 "2026-04-14"
             ),
-            "morning-sitesorted-business-claude-2026-04-14"
+            "morning-example-business-claude-2026-04-14"
         );
         assert_eq!(
-            build_job_id(
-                "sitesorted-business",
-                ProactivityProvider::Codex,
-                "2026-04-14"
-            ),
-            "morning-sitesorted-business-codex-2026-04-14"
+            build_job_id("example-business", ProactivityProvider::Codex, "2026-04-14"),
+            "morning-example-business-codex-2026-04-14"
         );
     }
 
@@ -3144,7 +3141,7 @@ mod tests {
                 "proactivity",
                 "run",
                 "--scope",
-                "sitesorted-business",
+                "example-business",
                 "--provider",
                 "codex",
             ],
@@ -3156,37 +3153,38 @@ mod tests {
 
     #[test]
     fn removable_task_names_include_both_provider_morning_tasks() {
-        let tasks = removable_task_names("sitesorted-business");
+        let tasks = removable_task_names("example-business");
 
-        assert!(tasks.contains(&"Munin-Proactivity-Morning-sitesorted-business-claude".to_string()));
-        assert!(tasks.contains(&"Munin-Proactivity-Morning-sitesorted-business-codex".to_string()));
-        assert!(tasks.contains(&"Munin-Proactivity-Sweep-sitesorted-business".to_string()));
+        assert!(tasks.contains(&"Munin-Proactivity-Morning-example-business-claude".to_string()));
+        assert!(tasks.contains(&"Munin-Proactivity-Morning-example-business-codex".to_string()));
+        assert!(tasks.contains(&"Munin-Proactivity-Sweep-example-business".to_string()));
         assert!(tasks
-            .contains(&"Context-Munin-Proactivity-Morning-sitesorted-business-claude".to_string()));
-        assert!(tasks
-            .contains(&"Context-Munin-Proactivity-Morning-sitesorted-business-codex".to_string()));
+            .contains(&"Context-Munin-Proactivity-Morning-example-business-claude".to_string()));
+        assert!(
+            tasks.contains(&"Context-Munin-Proactivity-Morning-example-business-codex".to_string())
+        );
     }
 
     #[test]
     fn rollback_only_removes_tasks_created_by_failed_install() {
         let installed_names = vec![
-            "Munin-Proactivity-Morning-sitesorted-business-codex".to_string(),
-            "Munin-Proactivity-Sweep-sitesorted-business".to_string(),
+            "Munin-Proactivity-Morning-example-business-codex".to_string(),
+            "Munin-Proactivity-Sweep-example-business".to_string(),
         ];
         let previously_installed = HashSet::from([
-            "Munin-Proactivity-Morning-sitesorted-business-claude".to_string(),
-            "Munin-Proactivity-Sweep-sitesorted-business".to_string(),
+            "Munin-Proactivity-Morning-example-business-claude".to_string(),
+            "Munin-Proactivity-Sweep-example-business".to_string(),
         ]);
 
         assert_eq!(
             newly_installed_task_names(&installed_names, &previously_installed),
-            vec!["Munin-Proactivity-Morning-sitesorted-business-codex".to_string()]
+            vec!["Munin-Proactivity-Morning-example-business-codex".to_string()]
         );
     }
 
     #[test]
     fn proactivity_scope_and_job_ids_reject_path_traversal() {
-        assert!(validate_scope_id("sitesorted-business").is_ok());
+        assert!(validate_scope_id("example-business").is_ok());
         assert!(validate_scope_id("..\\..\\Temp\\escape").is_err());
         assert!(validate_scope_id("../escape").is_err());
         assert!(validate_scope_id("bad:scope").is_err());
@@ -3197,7 +3195,7 @@ mod tests {
             briefs_dir: PathBuf::from("briefs"),
             state_dir: PathBuf::from("state"),
         };
-        assert!(locate_job_paths(&paths, "morning-sitesorted-business-codex-2026-05-11").is_ok());
+        assert!(locate_job_paths(&paths, "morning-example-business-codex-2026-05-11").is_ok());
         assert!(locate_job_paths(&paths, "..\\escape").is_err());
         assert!(locate_job_paths(&paths, "C:\\Temp\\escape").is_err());
     }
@@ -3205,20 +3203,20 @@ mod tests {
     #[test]
     fn session_names_include_provider() {
         assert_eq!(
-            build_session_name(ProactivityProvider::Claude, "sitesorted-business"),
-            "munin-morning-sitesorted-business-claude"
+            build_session_name(ProactivityProvider::Claude, "example-business"),
+            "munin-morning-example-business-claude"
         );
         assert_eq!(
-            build_session_name(ProactivityProvider::Codex, "sitesorted-business"),
-            "munin-morning-sitesorted-business-codex"
+            build_session_name(ProactivityProvider::Codex, "example-business"),
+            "munin-morning-example-business-codex"
         );
         assert_eq!(
-            morning_task_name("sitesorted-business", ProactivityProvider::Claude),
-            "Munin-Proactivity-Morning-sitesorted-business-claude"
+            morning_task_name("example-business", ProactivityProvider::Claude),
+            "Munin-Proactivity-Morning-example-business-claude"
         );
         assert_eq!(
-            morning_task_name("sitesorted-business", ProactivityProvider::Codex),
-            "Munin-Proactivity-Morning-sitesorted-business-codex"
+            morning_task_name("example-business", ProactivityProvider::Codex),
+            "Munin-Proactivity-Morning-example-business-codex"
         );
     }
 
@@ -3226,9 +3224,9 @@ mod tests {
     fn build_launch_instructions_references_claim_and_complete_commands() {
         let runtime = RuntimeContext {
             config: sample_config(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             provider: ProactivityProvider::Claude,
-            project_path: PathBuf::from("C:/Users/OEM/Projects/sitesorted"),
+            project_path: PathBuf::from("C:/Users/OEM/Projects/example-project"),
             schedule_local: "08:00".to_string(),
             max_spawns_per_day: 1,
             stale_claim_minutes: 90,
@@ -3242,13 +3240,13 @@ mod tests {
         let job = ProactivityJob {
             schema_version: "munin-proactivity-v1".to_string(),
             job_type: "morning-proactivity".to_string(),
-            job_id: "morning-sitesorted-business-2026-04-14".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            job_id: "morning-example-business-2026-04-14".to_string(),
+            scope_id: "example-business".to_string(),
             local_date: "2026-04-14".to_string(),
             created_at: Utc::now().to_rfc3339(),
             provider: ProactivityProvider::Claude,
-            project_path: "C:/Users/OEM/Projects/sitesorted".to_string(),
-            session_name: "munin-morning-sitesorted-business-claude".to_string(),
+            project_path: "C:/Users/OEM/Projects/example-project".to_string(),
+            session_name: "munin-morning-example-business-claude".to_string(),
             prompt_token: MORNING_PROMPT_TOKEN.to_string(),
             brief_path: "C:/tmp/b/morning.md".to_string(),
             launch_instructions_path: "C:/tmp/b/morning.launch.md".to_string(),
@@ -3269,7 +3267,7 @@ mod tests {
     fn launch_command_uses_powershell_argument_array_for_prompt_text() {
         let launch = build_provider_launch_command(
             "Munin Morning Test",
-            Path::new("C:/Users/OEM/Projects/sitesorted"),
+            Path::new("C:/Users/OEM/Projects/example-project"),
             "cargo",
             &["run", "quoted text ' & echo pwned & '"],
             &[],
@@ -3287,13 +3285,13 @@ mod tests {
         let job = ProactivityJob {
             schema_version: "munin-proactivity-v1".to_string(),
             job_type: "morning-proactivity".to_string(),
-            job_id: "morning-sitesorted-business-codex-2026-04-14".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            job_id: "morning-example-business-codex-2026-04-14".to_string(),
+            scope_id: "example-business".to_string(),
             local_date: "2026-04-14".to_string(),
             created_at: Utc::now().to_rfc3339(),
             provider: ProactivityProvider::Codex,
-            project_path: "C:/Users/OEM/Projects/sitesorted".to_string(),
-            session_name: "munin-morning-sitesorted-business-codex".to_string(),
+            project_path: "C:/Users/OEM/Projects/example-project".to_string(),
+            session_name: "munin-morning-example-business-codex".to_string(),
             prompt_token: MORNING_PROMPT_TOKEN.to_string(),
             brief_path: "C:/tmp/b/morning.md".to_string(),
             launch_instructions_path: "C:/tmp/b/morning.launch.md".to_string(),
@@ -3324,9 +3322,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let runtime = RuntimeContext {
             config: sample_config(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             provider: ProactivityProvider::Claude,
-            project_path: PathBuf::from("C:/Users/OEM/Projects/sitesorted"),
+            project_path: PathBuf::from("C:/Users/OEM/Projects/example-project"),
             schedule_local: "08:00".to_string(),
             max_spawns_per_day: 1,
             stale_claim_minutes: 90,
@@ -3338,7 +3336,7 @@ mod tests {
             },
         };
         let files = FileSet {
-            job_id: "morning-sitesorted-business-claude-2026-04-20".to_string(),
+            job_id: "morning-example-business-claude-2026-04-20".to_string(),
             local_date: "2026-04-20".to_string(),
             pending_path: temp.path().join("queue").join("job.json"),
             claim_path: temp.path().join("queue").join("job.processing.json"),
@@ -3349,7 +3347,7 @@ mod tests {
             completed_path: temp.path().join("state").join("completed.json"),
             heartbeat_path: temp.path().join("state").join("heartbeat"),
         };
-        let mut report = fallback_recommend_report("sitesorted-business", "test".to_string());
+        let mut report = fallback_recommend_report("example-business", "test".to_string());
         report.continuity.active = false;
         report.nudges.push(StrategicNudge {
             task: "Address red-state `Revenue (NZD)`".to_string(),
@@ -3417,7 +3415,7 @@ mod tests {
     fn sample_runtime_with_project(project_path: PathBuf, root: &Path) -> RuntimeContext {
         RuntimeContext {
             config: sample_config(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             provider: ProactivityProvider::Claude,
             project_path,
             schedule_local: "08:00".to_string(),
@@ -3453,7 +3451,7 @@ mod tests {
     fn sample_recommend_report_with_nudge(nudge: StrategicNudge) -> StrategyRecommendReport {
         StrategyRecommendReport {
             generated_at: Utc::now().to_rfc3339(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             continuity: strategy::StrategyContinuitySnapshot {
                 active: false,
                 summary: None,
@@ -3486,7 +3484,7 @@ mod tests {
                 project_path,
                 &crate::core::tracking::ApprovalJobInput {
                     job_id: format!(
-                        "approval-sitesorted-business-2026-05-01-friction-fix-{}",
+                        "approval-example-business-2026-05-01-friction-fix-{}",
                         item_id.replace(':', "-")
                     ),
                     scope: "project".to_string(),
@@ -3520,7 +3518,7 @@ mod tests {
         status: crate::core::tracking::ApprovalJobStatus,
     ) -> String {
         let job_id = format!(
-            "approval-sitesorted-2026-05-09-friction-fix-{}",
+            "approval-example-2026-05-09-friction-fix-{}",
             item_id.replace(':', "-")
         );
         tracker
@@ -3706,7 +3704,7 @@ mod tests {
     fn morning_intervention_prompt_prioritizes_friction_fixes() {
         let report = StrategyRecommendReport {
             generated_at: Utc::now().to_rfc3339(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             continuity: strategy::StrategyContinuitySnapshot {
                 active: false,
                 summary: None,
@@ -3765,9 +3763,9 @@ mod tests {
     fn launch_prompt_names_top_friction_intervention() {
         let runtime = RuntimeContext {
             config: sample_config(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             provider: ProactivityProvider::Claude,
-            project_path: PathBuf::from("C:/Users/OEM/Projects/sitesorted"),
+            project_path: PathBuf::from("C:/Users/OEM/Projects/example-project"),
             schedule_local: "08:00".to_string(),
             max_spawns_per_day: 1,
             stale_claim_minutes: 90,
@@ -3781,13 +3779,13 @@ mod tests {
         let job = ProactivityJob {
             schema_version: "munin-proactivity-v1".to_string(),
             job_type: "morning-proactivity".to_string(),
-            job_id: "morning-sitesorted-business-2026-04-18".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            job_id: "morning-example-business-2026-04-18".to_string(),
+            scope_id: "example-business".to_string(),
             local_date: "2026-04-18".to_string(),
             created_at: Utc::now().to_rfc3339(),
             provider: ProactivityProvider::Claude,
-            project_path: "C:/Users/OEM/Projects/sitesorted".to_string(),
-            session_name: "munin-morning-sitesorted-business-claude".to_string(),
+            project_path: "C:/Users/OEM/Projects/example-project".to_string(),
+            session_name: "munin-morning-example-business-claude".to_string(),
             prompt_token: MORNING_PROMPT_TOKEN.to_string(),
             brief_path: "C:/tmp/b/morning.md".to_string(),
             launch_instructions_path: "C:/tmp/b/morning.launch.md".to_string(),
@@ -3834,13 +3832,13 @@ mod tests {
         let job = ProactivityJob {
             schema_version: "munin-proactivity-v1".to_string(),
             job_type: "morning-proactivity".to_string(),
-            job_id: "morning-sitesorted-business-2026-04-14".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            job_id: "morning-example-business-2026-04-14".to_string(),
+            scope_id: "example-business".to_string(),
             local_date: "2026-04-14".to_string(),
             created_at: Utc::now().to_rfc3339(),
             provider: ProactivityProvider::Claude,
             project_path: temp.path().join("project").display().to_string(),
-            session_name: "munin-morning-sitesorted-business-claude".to_string(),
+            session_name: "munin-morning-example-business-claude".to_string(),
             prompt_token: MORNING_PROMPT_TOKEN.to_string(),
             brief_path: temp.path().join("briefs/brief.md").display().to_string(),
             launch_instructions_path: temp.path().join("briefs/launch.md").display().to_string(),
@@ -3891,14 +3889,14 @@ mod tests {
         ensure_runtime_dirs(&paths).expect("runtime dirs");
 
         let record = crate::core::tracking::ApprovalJobRecord {
-            job_id: "morning-sitesorted-business-2026-04-14".to_string(),
+            job_id: "morning-example-business-2026-04-14".to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             project_path: temp.path().join("project").display().to_string(),
             scope: "project".to_string(),
             scope_target: Some(temp.path().join("project").display().to_string()),
             local_date: "2026-04-14".to_string(),
-            item_id: Some("sitesorted-business".to_string()),
+            item_id: Some("example-business".to_string()),
             item_kind: "morning-proactivity".to_string(),
             title: "Morning proactivity".to_string(),
             summary: "Recovered from durable queue state.".to_string(),
@@ -3927,7 +3925,7 @@ mod tests {
         assert!(temp
             .path()
             .join("briefs")
-            .join("morning-sitesorted-business-2026-04-14.launch.md")
+            .join("morning-example-business-2026-04-14.launch.md")
             .exists());
     }
 
@@ -3938,7 +3936,7 @@ mod tests {
         let tracker = Tracker::new_at_path(&db_path).expect("tracker at temp path");
         let runtime = RuntimeContext {
             config: sample_config(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             provider: ProactivityProvider::Claude,
             project_path: temp.path().join("project"),
             schedule_local: "08:00".to_string(),
@@ -3954,7 +3952,7 @@ mod tests {
         ensure_runtime_dirs(&runtime.paths).expect("runtime dirs");
         let files = file_set_for_job(
             &runtime,
-            "morning-sitesorted-business-2026-04-14",
+            "morning-example-business-2026-04-14",
             "2026-04-14",
         )
         .expect("file set");
@@ -4062,8 +4060,8 @@ mod tests {
         let result = ProactivityResultArtifact {
             schema_version: "munin-proactivity-result-v1".to_string(),
             recorded_at: Utc::now().to_rfc3339(),
-            job_id: "morning-sitesorted-business-2026-04-14".to_string(),
-            scope_id: "sitesorted-business".to_string(),
+            job_id: "morning-example-business-2026-04-14".to_string(),
+            scope_id: "example-business".to_string(),
             local_date: "2026-04-14".to_string(),
             provider: ProactivityProvider::Claude,
             status: ProactivityTerminalStatus::Complete,
@@ -4084,19 +4082,19 @@ mod tests {
     fn complete_marks_only_primary_intervention_complete() {
         let temp = tempfile::tempdir().expect("tempdir");
         let tracker = Tracker::new_at_path(&temp.path().join("history.db")).expect("tracker");
-        let job_id = "morning-sitesorted-business-codex-2026-05-04".to_string();
+        let job_id = "morning-example-business-codex-2026-05-04".to_string();
         let primary_id =
-            "approval-sitesorted-business-2026-05-04-friction-fix-friction:autonomy-polling";
+            "approval-example-business-2026-05-04-friction-fix-friction:autonomy-polling";
         let secondary_id =
-            "approval-sitesorted-business-2026-05-04-friction-fix-friction:user-command-noise";
+            "approval-example-business-2026-05-04-friction-fix-friction:user-command-noise";
         let tertiary_id =
-            "approval-sitesorted-business-2026-05-04-friction-fix-friction:behavior:claude";
-        let project_path = "C:/Users/OEM/Projects/sitesorted";
+            "approval-example-business-2026-05-04-friction-fix-friction:behavior:claude";
+        let project_path = "C:/Users/OEM/Projects/example-project";
         let job = ProactivityJob {
             schema_version: "munin-proactivity-v1".to_string(),
             job_type: "morning-proactivity".to_string(),
             job_id: job_id.clone(),
-            scope_id: "sitesorted-business".to_string(),
+            scope_id: "example-business".to_string(),
             local_date: "2026-05-04".to_string(),
             created_at: Utc::now().to_rfc3339(),
             provider: ProactivityProvider::Codex,
