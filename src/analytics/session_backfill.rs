@@ -1,7 +1,8 @@
 //! Automatic first-run session backfill into Memory OS.
 
 use crate::analytics::session_impact_cmd::{
-    load_sessions, session_home_dir, CommandOutcome, SessionRecord,
+    load_sessions, project_roots_for_session_discovery, session_home_dir, CommandOutcome,
+    SessionRecord,
 };
 use crate::core::memory_os::{
     MemoryOsAction, MemoryOsActionCue, MemoryOsCheckpointCapture, MemoryOsCheckpointReentry,
@@ -505,12 +506,25 @@ fn recall_session_timestamp(date: Option<&str>) -> chrono::DateTime<Utc> {
 }
 
 fn resolve_recall_project_path(project: &str) -> String {
-    let candidate = PathBuf::from("C:\\Users\\OEM\\Projects").join(project);
-    if candidate.exists() {
-        candidate.to_string_lossy().to_string()
-    } else {
-        format!("recall://{}", project)
+    resolve_recall_project_path_with_roots(project, &project_roots_for_session_discovery())
+}
+
+fn resolve_recall_project_path_with_roots(project: &str, roots: &[PathBuf]) -> String {
+    let project = project.trim();
+    if project.is_empty() {
+        return "recall://unknown".to_string();
     }
+    let direct = PathBuf::from(project);
+    if direct.is_absolute() && direct.exists() {
+        return direct.to_string_lossy().to_string();
+    }
+    for root in roots {
+        let candidate = root.join(project);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    format!("recall://{}", project)
 }
 
 fn session_correction_occurrences(session: &SessionRecord) -> Vec<CorrectionOccurrence> {
@@ -1599,6 +1613,22 @@ mod tests {
 
         assert!(sessions.is_empty());
         std::env::remove_var("MUNIN_SESSION_HOME");
+    }
+
+    #[test]
+    fn recall_project_resolution_uses_env_aware_project_roots() {
+        let tmp = TempDir::new().expect("temp dir");
+        let project_dir = tmp.path().join("Projects").join("acme");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+
+        let resolved =
+            resolve_recall_project_path_with_roots("acme", &[tmp.path().join("Projects")]);
+
+        assert_eq!(resolved, project_dir.to_string_lossy());
+        assert_eq!(
+            resolve_recall_project_path_with_roots("missing", &[tmp.path().join("Projects")]),
+            "recall://missing"
+        );
     }
 
     #[test]

@@ -1548,6 +1548,7 @@ fn run_install(options: InstallOptions) -> Result<()> {
     let install_claude = options.claude || !options.codex;
     let install_codex = options.codex || !options.claude;
     let home = install_home_dir()?;
+    let codex_home = codex_home_dir(&home);
     let mut writes = 0usize;
 
     if install_claude {
@@ -1564,7 +1565,7 @@ fn run_install(options: InstallOptions) -> Result<()> {
         writes += install_claude_runtime_assets(&home, options.force, options.dry_run)?;
     }
     if install_codex {
-        let skill_root = home.join(".codex").join("skills");
+        let skill_root = codex_home.join("skills");
         writes += install_skills_at(
             &skill_root,
             options.force,
@@ -1572,7 +1573,7 @@ fn run_install(options: InstallOptions) -> Result<()> {
             options.keep_legacy,
             "Codex",
         )?;
-        let plugin_root = home.join(".codex").join("plugins").join("munin-memory");
+        let plugin_root = codex_home.join("plugins").join("munin-memory");
         writes += install_codex_plugin(&plugin_root, options.force, options.dry_run)?;
     }
 
@@ -1608,6 +1609,27 @@ fn install_home_dir() -> Result<PathBuf> {
         return Ok(PathBuf::from(home));
     }
     dirs::home_dir().context("could not determine home directory")
+}
+
+fn codex_home_dir(install_home: &Path) -> PathBuf {
+    codex_home_dir_from_env(
+        install_home,
+        std::env::var_os("MUNIN_INSTALL_HOME").as_deref(),
+        std::env::var_os("CODEX_HOME").as_deref(),
+    )
+}
+
+fn codex_home_dir_from_env(
+    install_home: &Path,
+    munin_install_home: Option<&std::ffi::OsStr>,
+    codex_home: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if munin_install_home.is_none() {
+        if let Some(home) = codex_home {
+            return PathBuf::from(home);
+        }
+    }
+    install_home.join(".codex")
 }
 
 fn run_check_resolvable() -> Result<()> {
@@ -1989,6 +2011,7 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
     let mut writes = 0usize;
     let munin_bin =
         std::env::current_exe().context("failed to resolve current munin executable")?;
+    let node_bin = resolve_node_binary()?;
     let hook_path = home.join(".claude").join("hooks").join("munin-runtime.js");
     let hook_body = render_js_hook_with_munin_bin(
         include_str!("../assets/integrations/v1/claude/munin-runtime.js"),
@@ -2017,8 +2040,8 @@ fn install_claude_runtime_assets(home: &Path, force: bool, dry_run: bool) -> Res
     }
 
     let settings_path = home.join(".claude").join("settings.json");
-    let command = format!("node {}", quote_command_path(&hook_path));
-    let session_start_command = format!("node {}", quote_command_path(&session_start_hook_path));
+    let command = render_node_hook_command(&node_bin, &hook_path);
+    let session_start_command = render_node_hook_command(&node_bin, &session_start_hook_path);
     let mut settings = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .with_context(|| format!("failed to read {}", settings_path.display()))?;
@@ -2060,6 +2083,18 @@ fn normalize_command_path(path: &Path) -> String {
 
 fn quote_command_path(path: &Path) -> String {
     format!("\"{}\"", normalize_command_path(path).replace('"', "\\\""))
+}
+
+fn render_node_hook_command(node_bin: &Path, hook_path: &Path) -> String {
+    format!(
+        "{} {}",
+        quote_command_path(node_bin),
+        quote_command_path(hook_path)
+    )
+}
+
+fn resolve_node_binary() -> Result<PathBuf> {
+    core::utils::resolve_binary("node").context("failed to resolve node executable for hooks")
 }
 
 fn render_js_hook_with_munin_bin(template: &str, munin_bin: &Path) -> Result<String> {
@@ -2275,6 +2310,7 @@ fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Resul
     let mut writes = 0usize;
     let munin_bin =
         std::env::current_exe().context("failed to resolve current munin executable")?;
+    let node_bin = resolve_node_binary()?;
     let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
     let plugin_manifest = render_codex_plugin_json();
     if write_installer_file(&manifest_path, &plugin_manifest, force, dry_run)? {
@@ -2296,7 +2332,7 @@ fn install_codex_plugin(plugin_root: &Path, force: bool, dry_run: bool) -> Resul
         println!("Codex plugin hook: {}", session_start_hook_path.display());
     }
     let hooks_path = plugin_root.join("hooks").join("hooks.json");
-    let hooks_json = render_codex_hooks_json(&session_start_hook_path)?;
+    let hooks_json = render_codex_hooks_json(&session_start_hook_path, &node_bin)?;
     if write_installer_file(&hooks_path, &hooks_json, force, dry_run)? {
         writes += 1;
         println!("Codex plugin hooks: {}", hooks_path.display());
@@ -2495,8 +2531,8 @@ fn render_codex_plugin_json() -> String {
         .replace("__MUNIN_VERSION__", env!("CARGO_PKG_VERSION"))
 }
 
-fn render_codex_hooks_json(session_start_hook_path: &Path) -> Result<String> {
-    let command = format!("node {}", quote_command_path(session_start_hook_path));
+fn render_codex_hooks_json(session_start_hook_path: &Path, node_bin: &Path) -> Result<String> {
+    let command = render_node_hook_command(node_bin, session_start_hook_path);
     let hooks = serde_json::json!({
         "hooks": {
             "SessionStart": [
@@ -2559,9 +2595,10 @@ fn validate_integration_asset_bundle() -> Result<usize> {
     if plugin_json.get("hooks").and_then(|value| value.as_str()) != Some("./hooks/hooks.json") {
         anyhow::bail!("rendered codex plugin manifest does not declare lifecycle hooks");
     }
-    let codex_hooks_text = render_codex_hooks_json(Path::new(
-        "C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js",
-    ))?;
+    let codex_hooks_text = render_codex_hooks_json(
+        Path::new("C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js"),
+        Path::new("C:/Program Files/nodejs/node.exe"),
+    )?;
     let codex_hooks_json: serde_json::Value = serde_json::from_str(&codex_hooks_text)
         .context("failed to parse rendered codex hooks JSON")?;
     if codex_hooks_json
@@ -2952,9 +2989,10 @@ mod tests {
             Some("./hooks/hooks.json")
         );
 
-        let hooks_text = render_codex_hooks_json(Path::new(
-            "C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js",
-        ))
+        let hooks_text = render_codex_hooks_json(
+            Path::new("C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js"),
+            Path::new("C:/Program Files/nodejs/node.exe"),
+        )
         .expect("hooks json");
         let hooks_json: serde_json::Value =
             serde_json::from_str(&hooks_text).expect("hooks json parse");
@@ -2971,14 +3009,20 @@ mod tests {
             .pointer("/hooks/SessionStart/0/hooks/0/command")
             .and_then(|value| value.as_str())
             .expect("command")
+            .starts_with("\"C:/Program Files/nodejs/node.exe\" "));
+        assert!(hooks_json
+            .pointer("/hooks/SessionStart/0/hooks/0/command")
+            .and_then(|value| value.as_str())
+            .expect("command")
             .contains("\"C:/Users/OEM/.codex/plugins/munin-memory/hooks/munin-session-start.js\""));
     }
 
     #[test]
     fn hook_commands_quote_paths_with_spaces() {
-        let hooks_text = render_codex_hooks_json(Path::new(
-            "C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js",
-        ))
+        let hooks_text = render_codex_hooks_json(
+            Path::new("C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js"),
+            Path::new("C:/Program Files/nodejs/node.exe"),
+        )
         .expect("hooks json");
         let hooks_json: serde_json::Value =
             serde_json::from_str(&hooks_text).expect("hooks json parse");
@@ -2986,7 +3030,26 @@ mod tests {
             hooks_json
                 .pointer("/hooks/SessionStart/0/hooks/0/command")
                 .and_then(|value| value.as_str()),
-            Some("node \"C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js\"")
+            Some("\"C:/Program Files/nodejs/node.exe\" \"C:/Users/OEM/Temp Home/munin-memory/hooks/munin-session-start.js\"")
+        );
+    }
+
+    #[test]
+    fn codex_install_honors_active_codex_home_without_munin_install_override() {
+        let install_home = Path::new("C:/Users/OEM");
+        let codex_home = std::ffi::OsString::from("D:/active-codex-home");
+
+        assert_eq!(
+            codex_home_dir_from_env(install_home, None, Some(&codex_home)),
+            PathBuf::from("D:/active-codex-home")
+        );
+        assert_eq!(
+            codex_home_dir_from_env(
+                Path::new("C:/Temp/install-home"),
+                Some(std::ffi::OsStr::new("C:/Temp/install-home")),
+                Some(&codex_home)
+            ),
+            PathBuf::from("C:/Temp/install-home/.codex")
         );
     }
 

@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -731,13 +731,13 @@ pub fn install_schedule(
     ensure_runtime_dirs(&runtime.paths)?;
     let exe = std::env::current_exe().context("Failed to resolve current munin executable")?;
     let mut installed_names = Vec::new();
+    let previously_installed = removable_task_names(&runtime.scope_id)
+        .into_iter()
+        .filter(|name| query_task_installed(name))
+        .collect::<HashSet<_>>();
+    let morning_name = morning_task_name(&runtime.scope_id, runtime.provider);
+    let sweep_name = sweep_task_name(&runtime.scope_id);
     let install_result = (|| -> Result<()> {
-        for stale in removable_task_names(&runtime.scope_id) {
-            if query_task_installed(&stale) {
-                delete_scheduled_task(&stale)?;
-            }
-        }
-        let morning_name = morning_task_name(&runtime.scope_id, runtime.provider);
         let provider_arg = runtime.provider.as_str();
         install_scheduled_task(
             &morning_name,
@@ -754,19 +754,18 @@ pub fn install_schedule(
                 local_time: runtime.schedule_local.clone(),
             },
         )?;
-        installed_names.push(morning_name);
-        let sweep_name = sweep_task_name(&runtime.scope_id);
+        installed_names.push(morning_name.clone());
         install_scheduled_task(
             &sweep_name,
             &exe,
             &["proactivity", "sweep", "--scope", runtime.scope_id.as_str()],
             ScheduleSpec::IntervalMinutes(SCHEDULE_SWEEP_INTERVAL_MINUTES),
         )?;
-        installed_names.push(sweep_name);
+        installed_names.push(sweep_name.clone());
         Ok(())
     })();
     if let Err(err) = install_result {
-        for name in installed_names {
+        for name in newly_installed_task_names(&installed_names, &previously_installed) {
             if query_task_installed(&name) {
                 let _ = delete_scheduled_task(&name);
             }
@@ -784,12 +783,20 @@ pub fn install_schedule(
         .save()
         .context("Failed to save proactivity config")
     {
-        for name in removable_task_names(&runtime.scope_id) {
+        for name in newly_installed_task_names(&installed_names, &previously_installed) {
             if query_task_installed(&name) {
                 let _ = delete_scheduled_task(&name);
             }
         }
         return Err(err);
+    }
+    for stale in removable_task_names(&runtime.scope_id) {
+        if stale == morning_name || stale == sweep_name {
+            continue;
+        }
+        if query_task_installed(&stale) {
+            delete_scheduled_task(&stale)?;
+        }
     }
 
     Ok(ProactivityScheduleInstallReport {
@@ -801,6 +808,17 @@ pub fn install_schedule(
         sweep_task: sweep_task_name(&runtime.scope_id),
         schedule_local: runtime.schedule_local,
     })
+}
+
+fn newly_installed_task_names(
+    installed_names: &[String],
+    previously_installed: &HashSet<String>,
+) -> Vec<String> {
+    installed_names
+        .iter()
+        .filter(|name| !previously_installed.contains(*name))
+        .cloned()
+        .collect()
 }
 
 pub fn remove_schedule(
@@ -2292,24 +2310,7 @@ fn build_launch_command(
     job: &ProactivityJob,
     launch_instructions_path: &Path,
 ) -> Result<LaunchCommand> {
-    let leading_task = job
-        .nudge_tasks
-        .iter()
-        .find(|task| task.starts_with("Fix friction:"))
-        .or_else(|| job.nudge_tasks.first())
-        .map(|task| {
-            format!(
-                " Start with this intervention: {task}. Work it until implemented, verified, or concretely blocked."
-            )
-        })
-        .unwrap_or_default();
-    let prompt = format!(
-        "{token}. The daemon already claimed the job. Read the brief at '{brief_path}'.{leading_task} When you finish, run: munin proactivity complete --job-id '{job_id}' --status complete --summary '<one sentence summary>'. On failure run: munin proactivity complete --job-id '{job_id}' --status failed --summary '<short failure summary>' --error '<concrete error>'. Full instructions are also at '{launch_path}'.",
-        token = MORNING_PROMPT_TOKEN,
-        job_id = job.job_id,
-        brief_path = job.brief_path,
-        launch_path = launch_instructions_path.display(),
-    );
+    let prompt = build_spawn_prompt(job, launch_instructions_path);
 
     match runtime.provider {
         ProactivityProvider::Claude => build_provider_launch_command(
@@ -2334,6 +2335,21 @@ fn build_launch_command(
     }
 }
 
+fn build_spawn_prompt(job: &ProactivityJob, launch_instructions_path: &Path) -> String {
+    let leading_task = if job.nudge_tasks.is_empty() {
+        String::new()
+    } else {
+        " Start with the top intervention listed in the brief. Work it until implemented, verified, or concretely blocked.".to_string()
+    };
+    format!(
+        "{token}. The daemon already claimed the job. Read the brief at '{brief_path}'.{leading_task} When you finish, run: munin proactivity complete --job-id '{job_id}' --status complete --summary '<one sentence summary>'. On failure run: munin proactivity complete --job-id '{job_id}' --status failed --summary '<short failure summary>' --error '<concrete error>'. Full instructions are also at '{launch_path}'.",
+        token = MORNING_PROMPT_TOKEN,
+        job_id = job.job_id,
+        brief_path = job.brief_path,
+        launch_path = launch_instructions_path.display(),
+    )
+}
+
 fn build_provider_launch_command(
     title: &str,
     cwd: &Path,
@@ -2342,21 +2358,24 @@ fn build_provider_launch_command(
     cleared_env: &[&str],
 ) -> Result<LaunchCommand> {
     let command_path = resolve_binary(binary_name)?;
-    let mut segments = Vec::new();
+    let (launch_file, launch_args) = provider_start_process_parts(&command_path, args);
+    let mut statements = Vec::new();
     for env_key in cleared_env {
-        segments.push(format!("set {}=", env_key));
+        statements.push(format!(
+            "Remove-Item Env:{} -ErrorAction SilentlyContinue",
+            env_key
+        ));
     }
-    segments.push(format!(
-        "cd /d {}",
-        quote_for_cmd(cwd.display().to_string())
-    ));
-    segments.push(render_windows_command(&command_path, args));
-    let inner = segments.join(" && ");
-    let launch = format!(
-        "$host.ui.RawUI.WindowTitle = {}; Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', {}) -WorkingDirectory {} -WindowStyle Normal",
-        quote_for_powershell(title),
-        quote_for_powershell(&inner),
+    statements.push(format!(
+        "Start-Process -FilePath {} -ArgumentList {} -WorkingDirectory {} -WindowStyle Normal",
+        quote_for_powershell(&launch_file),
+        render_powershell_array(&launch_args),
         quote_for_powershell(&cwd.display().to_string())
+    ));
+    let launch = format!(
+        "$host.ui.RawUI.WindowTitle = {}; {}",
+        quote_for_powershell(title),
+        statements.join("; ")
     );
     Ok(LaunchCommand {
         preview: launch.clone(),
@@ -2370,6 +2389,31 @@ fn build_provider_launch_command(
     })
 }
 
+fn provider_start_process_parts(command_path: &Path, args: &[&str]) -> (String, Vec<String>) {
+    let extension = command_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if extension == "ps1" {
+        let mut rendered_args = vec![
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            command_path.display().to_string(),
+        ];
+        rendered_args.extend(args.iter().map(|arg| (*arg).to_string()));
+        ("powershell.exe".to_string(), rendered_args)
+    } else {
+        (
+            command_path.display().to_string(),
+            args.iter().map(|arg| (*arg).to_string()).collect(),
+        )
+    }
+}
+
 fn run_launch_command(command: &LaunchCommand) -> Result<()> {
     let status = Command::new(&command.runner)
         .args(&command.args)
@@ -2379,33 +2423,6 @@ fn run_launch_command(command: &LaunchCommand) -> Result<()> {
         anyhow::bail!("Interactive launch command exited with {}", status);
     }
     Ok(())
-}
-
-fn render_windows_command(command_path: &Path, args: &[&str]) -> String {
-    let extension = command_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .unwrap_or_default();
-    let rendered_args = args
-        .iter()
-        .map(|arg| quote_arg_if_needed(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let rendered_command = quote_for_cmd(command_path.display().to_string());
-
-    if extension == "ps1" {
-        format!(
-            "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File {} {}",
-            rendered_command, rendered_args
-        )
-    } else if extension == "cmd" || extension == "bat" {
-        format!("call {} {}", rendered_command, rendered_args)
-    } else {
-        format!("{} {}", rendered_command, rendered_args)
-            .trim()
-            .to_string()
-    }
 }
 
 fn quote_arg_if_needed(value: &str) -> String {
@@ -2425,6 +2442,20 @@ fn quote_for_cmd(value: impl AsRef<str>) -> String {
 
 fn quote_for_powershell(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn render_powershell_array(values: &[String]) -> String {
+    if values.is_empty() {
+        return "@()".to_string();
+    }
+    format!(
+        "@({})",
+        values
+            .iter()
+            .map(|value| quote_for_powershell(value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn build_session_name(provider: ProactivityProvider, scope_id: &str) -> String {
@@ -3070,8 +3101,8 @@ mod tests {
     }
 
     #[test]
-    fn render_windows_command_supports_ps1_wrappers() {
-        let rendered = render_windows_command(
+    fn provider_start_process_parts_supports_ps1_wrappers() {
+        let (file, args) = provider_start_process_parts(
             Path::new("C:/Users/OEM/bin/codex.ps1"),
             &[
                 "--dangerously-bypass-approvals-and-sandbox",
@@ -3079,10 +3110,12 @@ mod tests {
                 "Read C:/brief.md",
             ],
         );
-        assert!(rendered.contains("powershell.exe"));
-        assert!(rendered.contains("-ExecutionPolicy Bypass"));
-        assert!(rendered.contains("--dangerously-bypass-approvals-and-sandbox"));
-        assert!(rendered.contains("munin-morning"));
+        assert_eq!(file, "powershell.exe");
+        assert!(args.contains(&"-ExecutionPolicy".to_string()));
+        assert!(args.contains(&"Bypass".to_string()));
+        assert!(args.contains(&"C:/Users/OEM/bin/codex.ps1".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"munin-morning".to_string()));
     }
 
     #[test]
@@ -3132,6 +3165,23 @@ mod tests {
             .contains(&"Context-Munin-Proactivity-Morning-sitesorted-business-claude".to_string()));
         assert!(tasks
             .contains(&"Context-Munin-Proactivity-Morning-sitesorted-business-codex".to_string()));
+    }
+
+    #[test]
+    fn rollback_only_removes_tasks_created_by_failed_install() {
+        let installed_names = vec![
+            "Munin-Proactivity-Morning-sitesorted-business-codex".to_string(),
+            "Munin-Proactivity-Sweep-sitesorted-business".to_string(),
+        ];
+        let previously_installed = HashSet::from([
+            "Munin-Proactivity-Morning-sitesorted-business-claude".to_string(),
+            "Munin-Proactivity-Sweep-sitesorted-business".to_string(),
+        ]);
+
+        assert_eq!(
+            newly_installed_task_names(&installed_names, &previously_installed),
+            vec!["Munin-Proactivity-Morning-sitesorted-business-codex".to_string()]
+        );
     }
 
     #[test]
@@ -3213,6 +3263,52 @@ mod tests {
         assert!(text.contains("munin proactivity complete"));
         assert!(text.contains("munin-morning"));
         assert!(text.contains("top `friction-fix`"));
+    }
+
+    #[test]
+    fn launch_command_uses_powershell_argument_array_for_prompt_text() {
+        let launch = build_provider_launch_command(
+            "Munin Morning Test",
+            Path::new("C:/Users/OEM/Projects/sitesorted"),
+            "cargo",
+            &["run", "quoted text ' & echo pwned & '"],
+            &[],
+        )
+        .expect("launch command");
+
+        assert!(!launch.preview.contains("cmd.exe"));
+        assert!(launch.preview.contains("Start-Process -FilePath"));
+        assert!(launch.preview.contains("-ArgumentList @("));
+        assert!(launch.preview.contains("quoted text '' & echo pwned & ''"));
+    }
+
+    #[test]
+    fn spawn_prompt_does_not_put_raw_nudge_text_on_command_line() {
+        let job = ProactivityJob {
+            schema_version: "munin-proactivity-v1".to_string(),
+            job_type: "morning-proactivity".to_string(),
+            job_id: "morning-sitesorted-business-codex-2026-04-14".to_string(),
+            scope_id: "sitesorted-business".to_string(),
+            local_date: "2026-04-14".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            provider: ProactivityProvider::Codex,
+            project_path: "C:/Users/OEM/Projects/sitesorted".to_string(),
+            session_name: "munin-morning-sitesorted-business-codex".to_string(),
+            prompt_token: MORNING_PROMPT_TOKEN.to_string(),
+            brief_path: "C:/tmp/b/morning.md".to_string(),
+            launch_instructions_path: "C:/tmp/b/morning.launch.md".to_string(),
+            decision_path: "C:/tmp/r/morning.decision.json".to_string(),
+            result_path: "C:/tmp/r/morning.json".to_string(),
+            continuity_active: false,
+            nudge_tasks: vec!["Fix friction: quoted text ' & echo pwned & '".to_string()],
+            intervention_job_ids: Vec::new(),
+        };
+
+        let prompt = build_spawn_prompt(&job, Path::new(&job.launch_instructions_path));
+
+        assert!(prompt.contains("top intervention listed in the brief"));
+        assert!(!prompt.contains("echo pwned"));
+        assert!(!prompt.contains("quoted text"));
     }
 
     #[test]
@@ -3710,7 +3806,8 @@ mod tests {
 
         assert!(launch
             .preview
-            .contains("Start with this intervention: Fix friction"));
+            .contains("top intervention listed in the brief"));
+        assert!(!launch.preview.contains("Keep autonomous work moving"));
         assert!(launch.preview.contains("Work it until implemented"));
         assert!(!launch.preview.contains("set CLAUDECODE="));
         assert!(!launch.preview.contains("set ANTHROPIC_API_KEY="));

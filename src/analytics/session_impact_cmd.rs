@@ -1014,14 +1014,11 @@ fn discover_codex_session_roots() -> Result<Vec<PathBuf>> {
         }
     }
 
-    if explicit_session_home_dir().is_some() {
-        roots.sort();
-        return Ok(roots);
-    }
-
-    let projects_root = Path::new("C:\\Users\\OEM\\Projects");
-    if projects_root.exists() {
-        for entry in WalkDir::new(projects_root)
+    for projects_root in project_roots_for_session_discovery() {
+        if !projects_root.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(&projects_root)
             .follow_links(false)
             .into_iter()
             .filter_map(|entry| entry.ok())
@@ -1046,6 +1043,7 @@ fn discover_codex_session_roots() -> Result<Vec<PathBuf>> {
         }
     }
 
+    roots.sort();
     Ok(roots)
 }
 
@@ -1053,10 +1051,57 @@ pub(crate) fn session_home_dir() -> Option<PathBuf> {
     explicit_session_home_dir().or_else(dirs::home_dir)
 }
 
-fn explicit_session_home_dir() -> Option<PathBuf> {
+pub(crate) fn explicit_session_home_dir() -> Option<PathBuf> {
     std::env::var_os("MUNIN_SESSION_HOME")
         .or_else(|| std::env::var_os("MUNIN_INSTALL_HOME"))
         .map(PathBuf::from)
+}
+
+pub(crate) fn project_roots_for_session_discovery() -> Vec<PathBuf> {
+    project_roots_for_session_discovery_from(
+        explicit_session_home_dir().as_deref(),
+        dirs::home_dir().as_deref(),
+        std::env::var_os("MUNIN_PROJECTS_ROOT").as_deref(),
+        std::env::current_dir().ok().as_deref(),
+    )
+}
+
+fn project_roots_for_session_discovery_from(
+    explicit_session_home: Option<&Path>,
+    user_home: Option<&Path>,
+    projects_root_env: Option<&std::ffi::OsStr>,
+    current_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(value) = projects_root_env {
+        for root in std::env::split_paths(value) {
+            push_unique_path(&mut roots, &mut seen, root);
+        }
+    }
+    if let Some(home) = explicit_session_home.or(user_home) {
+        push_unique_path(&mut roots, &mut seen, home.join("Projects"));
+    }
+    if explicit_session_home.is_none() {
+        if let Some(cwd) = current_dir {
+            push_unique_path(&mut roots, &mut seen, cwd.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn push_unique_path(
+    roots: &mut Vec<PathBuf>,
+    seen: &mut std::collections::HashSet<String>,
+    path: PathBuf,
+) {
+    let key = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if seen.insert(key) {
+        roots.push(path);
+    }
 }
 
 fn session_matches_filters(
@@ -1657,6 +1702,35 @@ mod tests {
         assert_eq!(sessions[1].session_id, "session-b");
         assert_eq!(sessions[1].user_prompts.len(), 1);
         assert!(sessions[1].shells.is_empty());
+    }
+
+    #[test]
+    fn project_roots_follow_explicit_session_home_and_skip_cwd() {
+        let explicit = Path::new("C:/Temp/session-home");
+        let home = Path::new("C:/Users/example");
+        let cwd = Path::new("D:/work/current-project");
+        let roots =
+            project_roots_for_session_discovery_from(Some(explicit), Some(home), None, Some(cwd));
+
+        assert_eq!(roots, vec![PathBuf::from("C:/Temp/session-home/Projects")]);
+    }
+
+    #[test]
+    fn project_roots_include_env_and_cwd_without_explicit_session_home() {
+        let home = Path::new("C:/Users/example");
+        let cwd = Path::new("D:/work/current-project");
+        let env_roots = std::ffi::OsString::from("E:/projects");
+        let roots =
+            project_roots_for_session_discovery_from(None, Some(home), Some(&env_roots), Some(cwd));
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("E:/projects"),
+                PathBuf::from("C:/Users/example/Projects"),
+                PathBuf::from("D:/work/current-project")
+            ]
+        );
     }
 
     #[test]
