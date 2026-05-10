@@ -536,6 +536,38 @@ pub struct MemoryOsFrictionReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryOsRecallSessionCommandCounts {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub unknown: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryOsRecallSessionSummaryQuality {
+    pub human_usable: bool,
+    pub machine_usable: bool,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryOsRecallSessionSummary {
+    pub schema_version: String,
+    pub source: Option<String>,
+    pub session_id: Option<String>,
+    pub project_path: String,
+    pub started_at: Option<String>,
+    pub bullet_count: usize,
+    pub bullets: Vec<String>,
+    pub first_user_ask: Option<String>,
+    pub latest_user_ask: Option<String>,
+    pub prompt_coverage: Option<String>,
+    pub command_counts: Option<MemoryOsRecallSessionCommandCounts>,
+    pub handoff: Option<String>,
+    pub quality: MemoryOsRecallSessionSummaryQuality,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemoryOsRecallMatch {
     pub title: String,
     pub answer: String,
@@ -544,6 +576,8 @@ pub struct MemoryOsRecallMatch {
     pub source_ref: String,
     pub project_path: String,
     pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_summary: Option<MemoryOsRecallSessionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -20,7 +20,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v14";
+const ONBOARDING_SCHEMA_VERSION: &str = "memory-os-session-onboarding-v16";
 const ONBOARDING_STATE_FILE: &str = "memory_os_session_onboarding.json";
 const ONBOARDING_LOCK_DB_FILE: &str = "memory_os_session_onboarding.lock.sqlite";
 const INCREMENTAL_CHECK_INTERVAL_MINUTES: i64 = 15;
@@ -723,8 +723,8 @@ fn session_summary_bullets(
 
     bullets.push(match first_prompt {
         Some(prompt) => format!(
-            "User asked first: {}.",
-            sentence_for_session_summary(prompt)
+            "User asked first: {}",
+            punctuated_session_fragment(&sentence_for_session_summary(prompt))
         ),
         None => "User asked first: no direct user prompt was captured in this source session."
             .to_string(),
@@ -732,7 +732,10 @@ fn session_summary_bullets(
 
     bullets.push(match (first_prompt, last_prompt) {
         (Some(first), Some(last)) if first != last => {
-            format!("Latest user ask: {}.", sentence_for_session_summary(last))
+            format!(
+                "Latest user ask: {}",
+                punctuated_session_fragment(&sentence_for_session_summary(last))
+            )
         }
         (Some(_), Some(_)) => format!(
             "Prompt coverage: {} captured user prompt(s); the latest ask matches the first ask.",
@@ -797,24 +800,30 @@ fn session_summary_handoff(
         );
     }
 
-    if let Some(shell) = session
-        .shells
-        .iter()
-        .rev()
-        .find(|shell| shell.outcome.is_success())
-    {
+    if let Some(shell) = session.shells.iter().rev().find(|shell| {
+        shell.outcome.is_success() && !low_information_command_summary(&shell.command)
+    }) {
         return format!(
             "Important handoff: the latest successful command was `{}`; rerun only after checking current state.",
             command_for_session_summary(&shell.command)
         );
     }
 
-    "Important handoff: no shell command evidence was captured; use the prompt summary as recall context."
-        .to_string()
+    if session
+        .shells
+        .iter()
+        .any(|shell| shell.outcome.is_success())
+    {
+        "Important handoff: only low-information navigation or inspection commands were captured; use the prompt summary as recall context."
+            .to_string()
+    } else {
+        "Important handoff: no shell command evidence was captured; use the prompt summary as recall context."
+            .to_string()
+    }
 }
 
 fn sentence_for_session_summary(text: &str) -> String {
-    let compact = clean_prompt_for_session_summary(text)
+    let compact = scrub_local_paths_for_summary(&clean_prompt_for_session_summary(text))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -826,6 +835,15 @@ fn sentence_for_session_summary(text: &str) -> String {
         .trim_matches('"')
         .trim_end_matches(['.', '?', '!']);
     compact_semantic_summary(sentence, 180)
+}
+
+fn punctuated_session_fragment(fragment: &str) -> String {
+    let trimmed = fragment.trim();
+    if trimmed.ends_with('.') || trimmed.ends_with('?') || trimmed.ends_with('!') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.")
+    }
 }
 
 fn command_for_session_summary(command: &str) -> String {
@@ -857,6 +875,13 @@ fn command_for_session_summary(command: &str) -> String {
     compact_semantic_summary(&compact, 120)
 }
 
+fn low_information_command_summary(command: &str) -> bool {
+    matches!(
+        command_for_session_summary(command).as_str(),
+        "cd" | "ls" | "dir" | "pwd" | "get-childitem" | "get-content" | "cat" | "type"
+    )
+}
+
 fn clean_prompt_for_session_summary(text: &str) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if let Some(command_args) = extract_tag_content(&compact, "command-args") {
@@ -865,6 +890,36 @@ fn clean_prompt_for_session_summary(text: &str) -> String {
     let without_command_message = remove_tag_block(&compact, "command-message");
     let without_command_name = remove_tag_block(&without_command_message, "command-name");
     strip_angle_tags(&without_command_name)
+}
+
+fn scrub_local_paths_for_summary(text: &str) -> String {
+    text.split_whitespace()
+        .map(|token| {
+            let trimmed = token.trim_matches(|ch| matches!(ch, '\'' | '"' | '(' | ')' | '[' | ']'));
+            if trimmed.starts_with("C:\\")
+                || trimmed.starts_with("C:/")
+                || trimmed.starts_with("c:\\")
+                || trimmed.starts_with("c:/")
+            {
+                let prefix = token
+                    .chars()
+                    .take_while(|ch| matches!(ch, '\'' | '"' | '(' | '['))
+                    .collect::<String>();
+                let suffix = token
+                    .chars()
+                    .rev()
+                    .take_while(|ch| matches!(ch, '\'' | '"' | ')' | ']' | '.' | ',' | ';' | ':'))
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                format!("{prefix}[local path]{suffix}")
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
@@ -1483,7 +1538,7 @@ mod tests {
             timestamp: DateTime::parse_from_rfc3339("2026-04-10T00:00:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            text: "<command-message>plan-ceo-review</command-message> <command-name>/plan-ceo-review</command-name> <command-args>I think Munin memory needs session summaries attached to recall.</command-args>".to_string(),
+            text: "<command-message>plan-ceo-review</command-message> <command-name>/plan-ceo-review</command-name> <command-args>I think Munin memory needs session summaries attached to recall. Read C:\\Users\\OEM\\AppData\\Local\\context\\brief.md first.</command-args>".to_string(),
         }];
         session.shells = vec![ShellExecution {
             timestamp: DateTime::parse_from_rfc3339("2026-04-10T00:00:02Z")
@@ -1506,9 +1561,11 @@ mod tests {
         assert!(summary.summary.contains("I think Munin memory needs"));
         assert!(!summary.summary.contains("command-message"));
         assert!(!summary.summary.contains("sales-autopilot-*.log"));
+        assert!(!summary.summary.contains("AppData\\Local\\context"));
+        assert!(summary.summary.contains("[local path]"));
         assert!(summary
             .summary
-            .contains("latest successful command was `ls`"));
+            .contains("only low-information navigation or inspection commands were captured"));
     }
 
     #[test]

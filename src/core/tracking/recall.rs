@@ -5,6 +5,10 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 use super::{resolved_project_path, Tracker};
+use crate::core::memory_os::{
+    MemoryOsPacketSelection, MemoryOsRecallSessionCommandCounts, MemoryOsRecallSessionSummary,
+    MemoryOsRecallSessionSummaryQuality,
+};
 use crate::core::utils::truncate;
 
 const SESSION_SUMMARY_RECALL_MAX_CHARS: usize = 1600;
@@ -37,6 +41,7 @@ impl Tracker {
                         checkpoint.capture.generated_at
                     )],
                     12,
+                    None,
                 ));
             }
             if let Some(recommendation) =
@@ -50,6 +55,7 @@ impl Tracker {
                         checkpoint.capture.reentry.recommended_command
                     )],
                     10,
+                    None,
                 ));
             }
             candidates.push((
@@ -60,6 +66,7 @@ impl Tracker {
                     checkpoint.capture.reentry.first_verification
                 )],
                 8,
+                None,
             ));
             for item in &checkpoint.capture.selected_items {
                 candidates.push((
@@ -67,6 +74,7 @@ impl Tracker {
                     item.summary.clone(),
                     item.provenance.clone(),
                     item.score / 100,
+                    structured_session_summary_for_recall(item, &checkpoint.project_path),
                 ));
                 if let Some(subject) = item.subject.as_deref() {
                     candidates.push((
@@ -74,11 +82,12 @@ impl Tracker {
                         subject.to_string(),
                         item.provenance.clone(),
                         item.score / 120,
+                        None,
                     ));
                 }
             }
 
-            for (source_kind, text, evidence, base_score) in candidates {
+            for (source_kind, text, evidence, base_score, session_summary) in candidates {
                 let overlap = token_overlap(&tokens, &text);
                 if overlap == 0 {
                     continue;
@@ -109,6 +118,7 @@ impl Tracker {
                         .into_iter()
                         .map(|item| truncate(item.trim(), 180))
                         .collect(),
+                    session_summary,
                 });
             }
         }
@@ -157,6 +167,7 @@ impl Tracker {
                     source_ref: format!("journal:{committed_at}"),
                     project_path: project_path.clone(),
                     evidence: vec![format!("journal event kind: {event_kind}")],
+                    session_summary: None,
                 });
             }
         }
@@ -248,6 +259,150 @@ fn collect_json_strings(value: &Value, out: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+fn structured_session_summary_for_recall(
+    item: &MemoryOsPacketSelection,
+    project_path: &str,
+) -> Option<MemoryOsRecallSessionSummary> {
+    if item.kind != "session-summary" {
+        return None;
+    }
+
+    let bullets = item
+        .summary
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("- ")
+                .map(|value| value.to_string())
+        })
+        .collect::<Vec<_>>();
+    let bullet_count = bullets.len();
+    let source = item
+        .provenance
+        .iter()
+        .find_map(|line| line.strip_prefix("session:").map(str::to_string))
+        .or_else(|| {
+            item.subject
+                .as_deref()
+                .and_then(|subject| subject.strip_prefix("session-summary:"))
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(source, _)| source.to_string())
+        });
+    let session_id = item
+        .provenance
+        .iter()
+        .find_map(|line| line.strip_prefix("session-id:").map(str::to_string))
+        .or_else(|| {
+            item.subject
+                .as_deref()
+                .and_then(|subject| subject.strip_prefix("session-summary:"))
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(_, session_id)| session_id.to_string())
+        });
+    let started_at = bullets.first().and_then(|bullet| {
+        bullet
+            .rsplit_once(" started ")
+            .map(|(_, started_at)| started_at.trim().trim_end_matches('.').to_string())
+    });
+    let first_user_ask = strip_bullet_field(&bullets, "User asked first:");
+    let latest_user_ask = strip_bullet_field(&bullets, "Latest user ask:");
+    let prompt_coverage = strip_bullet_field(&bullets, "Prompt coverage:");
+    let command_counts = bullets
+        .iter()
+        .find(|bullet| bullet.starts_with("Work performed:"))
+        .and_then(|bullet| parse_command_counts(bullet));
+    let handoff = strip_bullet_field(&bullets, "Important handoff:")
+        .or_else(|| strip_bullet_field(&bullets, "Recall handoff:"));
+
+    let mut issues = Vec::new();
+    if bullet_count != 5 {
+        issues.push("expected-five-bullets".to_string());
+    }
+    if source.is_none() {
+        issues.push("missing-source".to_string());
+    }
+    if session_id.is_none() {
+        issues.push("missing-session-id".to_string());
+    }
+    if command_counts.is_none() {
+        issues.push("missing-command-counts".to_string());
+    }
+    if contains_summary_noise(&item.summary) {
+        issues.push("raw-command-or-wrapper-noise".to_string());
+    }
+
+    let machine_usable = issues.is_empty();
+    let human_usable = bullet_count == 5 && !contains_summary_noise(&item.summary);
+
+    Some(MemoryOsRecallSessionSummary {
+        schema_version: "memory-os-recall-session-summary-v1".to_string(),
+        source,
+        session_id,
+        project_path: project_path.to_string(),
+        started_at,
+        bullet_count,
+        bullets,
+        first_user_ask,
+        latest_user_ask,
+        prompt_coverage,
+        command_counts,
+        handoff,
+        quality: MemoryOsRecallSessionSummaryQuality {
+            human_usable,
+            machine_usable,
+            issues,
+        },
+    })
+}
+
+fn strip_bullet_field(bullets: &[String], prefix: &str) -> Option<String> {
+    bullets
+        .iter()
+        .find_map(|bullet| bullet.strip_prefix(prefix))
+        .map(|value| trim_terminal_sentence_period(value.trim()).to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn trim_terminal_sentence_period(value: &str) -> &str {
+    if value.ends_with("...") {
+        value
+    } else {
+        value.strip_suffix('.').unwrap_or(value)
+    }
+}
+
+fn parse_command_counts(bullet: &str) -> Option<MemoryOsRecallSessionCommandCounts> {
+    let numbers = bullet
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    if numbers.len() < 4 {
+        return None;
+    }
+    Some(MemoryOsRecallSessionCommandCounts {
+        total: numbers[0],
+        succeeded: numbers[1],
+        failed: numbers[2],
+        unknown: numbers[3],
+    })
+}
+
+fn contains_summary_noise(summary: &str) -> bool {
+    let lowered = summary.to_ascii_lowercase();
+    [
+        "<command-message>",
+        "<command-name>",
+        "<command-args>",
+        "<local-command-stdout>",
+        "2>&1",
+        " | ",
+        "*.log",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
 }
 
 #[cfg(test)]
@@ -365,6 +520,16 @@ mod tests {
             5
         );
         assert!(report.matches[0].answer.contains("Munin recall"));
+        let summary = report.matches[0]
+            .session_summary
+            .as_ref()
+            .expect("structured session summary");
+        assert_eq!(summary.source.as_deref(), Some("codex"));
+        assert_eq!(summary.session_id.as_deref(), Some("abc"));
+        assert_eq!(summary.bullet_count, 5);
+        assert_eq!(summary.command_counts.as_ref().expect("counts").total, 4);
+        assert!(summary.quality.human_usable);
+        assert!(summary.quality.machine_usable);
     }
 
     #[test]
@@ -391,7 +556,7 @@ mod tests {
             provenance: vec!["session:codex".to_string(), "session-id:abc".to_string()],
         }];
         let mut new_capture = old_capture.clone();
-        new_capture.packet_id = "onboarding-memory-os-session-onboarding-v14-codex-abc".to_string();
+        new_capture.packet_id = "onboarding-memory-os-session-onboarding-v16-codex-abc".to_string();
         new_capture.selected_items[0].summary = [
             "- Session summary: codex session `abc` for `C:/repo` started 2026-04-18T00:00:00Z.",
             "- User asked first: duplicate session summary recall.",
@@ -420,7 +585,7 @@ mod tests {
         assert_eq!(session_summary_matches.len(), 1);
         assert!(session_summary_matches[0]
             .source_ref
-            .contains("memory-os-session-onboarding-v14"));
+            .contains("memory-os-session-onboarding-v16"));
         assert!(session_summary_matches[0]
             .answer
             .contains("command noise compact"));
